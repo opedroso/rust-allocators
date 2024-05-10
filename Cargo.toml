@@ -1,0 +1,40 @@
+#cargo-features = ["profile-rustflags"]
+[package]
+name = "rust-allocators"
+version = "0.1.0"
+edition = "2021"
+default-run = "rust-define-global-allocator"  # Specify default binary name here
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "rust-define-global-allocator"
+path = "src/rust-define-global-allocator.rs"
+
+[[bin]]
+name = "rust-paragraph-allocator"
+path = "src/rust-paragraph-allocator.rs"
+
+[dependencies]
+crossbeam = "0.8.4"
+env_logger = "0.11.3"
+log = "0.4.21"
+
+[dependencies.windows]
+version = "0.56.0"
+features = [
+    "Data_Xml_Dom",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.dev]
+#rustflags = ["-C", "link-args=/STACK:10485760"]
+
+[profile.release]
+debug = true  # Enable debug information
+
+[profile.test]
+debug = true  # Enable debug information
