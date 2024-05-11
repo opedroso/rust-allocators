@@ -11,7 +11,7 @@ use std::default::Default;
 use std::pin::Pin;
 use std::cmp::max;
 use log::*;
-use std::ops::{Deref,DerefMut};
+use std::ops::*;
 
 // global constants
 const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
@@ -153,21 +153,6 @@ impl MemoryArena {
 }
 
 fn main() {
-    let mut paragraph = Paragraph::new();
-    let mut boxed_paragraph = Box::new(Paragraph::new());
-    let mut pinned_boxed_paragraph = Box::pin(Paragraph::new());
-    paragraph.set_paragraph_signature(0x111);
-    boxed_paragraph.set_paragraph_signature(0x222);
-    pinned_boxed_paragraph.set_paragraph_signature(0x444);
-    print_stack_extents_win();
-    let (base_addr, next_free_idx) = paragraph.get_paragraph_signature();
-    debug!("main: paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", &paragraph, std::mem::size_of_val(&paragraph), base_addr, next_free_idx);
-    let (base_addr, next_free_idx) = boxed_paragraph.get_paragraph_signature();
-    let unboxed_paragraph = boxed_paragraph.deref();
-    debug!("main: boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unboxed_paragraph, std::mem::size_of_val(unboxed_paragraph), base_addr, next_free_idx);
-    let (base_addr, next_free_idx) = pinned_boxed_paragraph.get_paragraph_signature();
-    let unpined_unboxed_paragraph = pinned_boxed_paragraph.deref();
-    debug!("main: pinned_boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unpined_unboxed_paragraph, std::mem::size_of_val(unpined_unboxed_paragraph), base_addr, next_free_idx);
 
     let arena = MemoryArena::new();
     // Example usage:
@@ -189,7 +174,7 @@ mod tests {
     #[test]
     fn test_validate_sizes() {
         // Create a thread builder with a stack size of 20 MiB
-        let builder = thread::Builder::new().stack_size(1 * 1024 * 1024).name("test_validate_sizes".into());
+        let builder = thread::Builder::new().stack_size(10 * 1024 * 1024).name("test_validate_sizes".into());
 
         // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
@@ -246,7 +231,7 @@ mod tests {
     #[test]
     fn test_allocate_all_paragraphs() {
         // Create a thread builder with a stack size of 4 MiB
-        let builder = thread::Builder::new().stack_size(20 * 1024 * 1024);
+        let builder = thread::Builder::new().stack_size(20 * 1024 * 1024).name("test_allocate_all_paragraphs".into());
 
         // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
@@ -275,6 +260,29 @@ mod tests {
         } else {
             error!("test_validate_sizes: Error creating the thread.");
         }
+    }
+
+    #[test]
+    //[ignore] // used for test driver development only
+    fn tdd_paragraph() {
+        let mut paragraph = Paragraph::new();
+        let mut boxed_paragraph = Box::new(Paragraph::new());
+        let mut pinned_boxed_paragraph = Box::pin(Paragraph::new());
+        paragraph.set_paragraph_signature(0x111);
+        boxed_paragraph.set_paragraph_signature(0x222);
+        pinned_boxed_paragraph.set_paragraph_signature(0x444);
+        print_stack_extents_win();
+        let (base_addr, next_free_idx) = paragraph.get_paragraph_signature();
+        debug!("main: paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", &paragraph, std::mem::size_of_val(&paragraph), base_addr, next_free_idx);
+        let (base_addr, next_free_idx) = boxed_paragraph.get_paragraph_signature();
+        let unboxed_paragraph = boxed_paragraph.deref();
+        debug!("main: boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unboxed_paragraph, std::mem::size_of_val(unboxed_paragraph), base_addr, next_free_idx);
+        let (base_addr, next_free_idx) = pinned_boxed_paragraph.get_paragraph_signature();
+        let unpined_unboxed_paragraph = pinned_boxed_paragraph.deref();
+        debug!("main: pinned_boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unpined_unboxed_paragraph, std::mem::size_of_val(unpined_unboxed_paragraph), base_addr, next_free_idx);
+        assert_eq!(paragraph.get_paragraph_signature().1, 0x111);
+        assert_eq!(boxed_paragraph.get_paragraph_signature().1, 0x222);
+        assert_eq!(pinned_boxed_paragraph.get_paragraph_signature().1, 0x444);
     }
 }
 
