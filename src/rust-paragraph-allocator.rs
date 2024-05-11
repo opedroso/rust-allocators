@@ -21,6 +21,47 @@ const COUNT_PARAGRAPH_IDX: usize = (ARENA_SIZE/PARAGRAPH_SIZE_IN_BYTES) - 2; // 
 const MAX_PARAGRAPH_IDX: usize = COUNT_PARAGRAPH_IDX - 1; // all valid paragraph indices are less than this
 
 
+/// MemoryArena manages allocations within its static memory array
+/// It is meant to be written once by possibly multi-threaded user block producers
+/// There is no way to deallocate a single user block: only whole pool can be deallocated (all user blocks dealocated at once)
+/// 
+/// Allocations:
+/// Minimum allocation is 32 bytes (control area of 16 bytes + user block of up to 16 bytes) or ( 1 control paragraph + 1 user block paragraph)
+/// Maximum allocation with 1 Mib pool (as implemented) is 1_048_544 bytes (or 65_534 paragraphs) or (1 control paragraph + 65_533 user block paragraphs)
+/// Maximum user block allocation is then 1_048_528 bytes
+/// If a request is made for a block that would lay beyond pool capacity, the user gets error *and* pool is closed for new allocations (last block is wasted)
+/// It is possible that last block request failed due to multi-threading usage
+/// In this case, pool will show that next free block have index larger than COUNT_PARAGRAPH_IDX
+/// This also indicates that the pool is full
+/// Iterating over the list of allocated blocks will stop at last successfully allocated block (paragraph next free block index will still be zero)
+/// Failed last alloc returns error to requester and arena's next free block index gets reset to MAX_PARAGRAPH_IDX (which is larger than COUNT_PARAGRAPH_IDX)
+/// 
+/// Alignment:
+/// Allocations are aligned to 16 byte boundary. Pool is aligned to 1 MiB boundary
+/// Any allocation can find its pool by shifting its address by 20 bits (2^20 = 1 MiB)
+/// Control paragraph has a signature that contains (pool base address, index where next allocation begins)
+/// Last allocated block in pool will have (pool base addres, zero) in its control block
+/// Number of bits dedicated to index to next allocation has 20 bits but for 1 MiB implementation only 16 bits are used
+/// As there are no pointers in control data, only indices, pool can be memoy mapped to a different locations and still be valid
+/// Base address would have original mapping but that can be used to indicate that user block has not yet been processed after this new mapping
+/// 
+/// Stack requirement:
+/// Stack size for thread creating the MemoryArena has to be larger than 1 Mib + your functions requirement
+/// Suggestion is to create MemoryArenas from specific thread started with enough stack space (see tests for example)
+/// 
+#[repr(align(1_048_576))] // ONE_MEGABYTE boundary
+#[derive(Debug)]
+struct MemoryArena {
+    // 1 MB = Paragraph[65_536]
+    // memory arena for allocation begins here
+    memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPH_IDX]>, // indices 0..65_533 // memory must be first memory address within MemoryArena
+    // paragraph[65534] // = 1 + COUNT_PARAGRAPH_IDX
+    _available: u64, // contents not yet used, but must be first variable past memory (or update function contains)
+    next_available_paragraph_idx: AtomicCell::<usize>, // value must be less than MAX_PARAGRAPH_IDX; index into memory array that is free for next allocation
+    // paragraph[65535] // = 2 + COUNT_PARAGRAPH_IDX - last 16 bytes in 1 MB block
+    future_next_arena_base_addr: AtomicCell::<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
+    signature: u64, // ((the base address of the arena)>>20)
+}
 
 #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
 #[derive(Copy, Clone)]
@@ -74,23 +115,6 @@ impl From<*mut Paragraph> for Paragraph {
     }
 }
 */
-
-
-// MemoryArena manages allocations within its memory array
-#[repr(align(1_048_576))] // ONE_MEGABYTE boundary
-#[derive(Debug)]
-struct MemoryArena {
-    // 1 MB = Paragraph[65_536]
-    // memory arena for allocation begins here
-    memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPH_IDX]>, // indices 0..65_533 // memory must be first memory address within MemoryArena
-    // paragraph[65534] // = 1 + COUNT_PARAGRAPH_IDX
-    _available: u64, // contents not yet used, but must be first variable past memory (or update function contains)
-    next_available_paragraph_idx: AtomicCell::<usize>, // value must be less than MAX_PARAGRAPH_IDX; index into memory array that is free for next allocation
-    // paragraph[65535] // = 2 + COUNT_PARAGRAPH_IDX - last 16 bytes in 1 MB block
-    future_next_arena_base_addr: AtomicCell::<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
-    signature: u64, // ((the base address of the arena)>>20)
-}
-
 
 impl MemoryArena {
     fn new() -> Pin<Box<MemoryArena>> {
@@ -146,6 +170,10 @@ impl MemoryArena {
                 let mut_arena_memory = self.memory.get();
                 NonNull::new(&mut (*mut_arena_memory)[index] as *mut _ as *mut u8)
             } else {
+                let mut new_value = index;
+                while let Err(index) = self.next_available_paragraph_idx.compare_exchange(new_value, MAX_PARAGRAPH_IDX) {
+                    new_value = index;
+                }
                 return None;
             }
         }
