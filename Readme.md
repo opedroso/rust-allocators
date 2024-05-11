@@ -57,10 +57,7 @@ To implement a custom global allocator, you can create a type that implements th
 
 Example of a custom allocator can be see in our source [rust-define-global-allocator.rs](./src/rust-define-global-allocator.rs) file contains an implementation of the Rust GlobalAlloc trait which is what Rust calls an interface.
 
-Example of a usage of a custom allocator can be see in our source [rust-using-custom-allocator.rs](./src/rust-using-custom-allocator.rs) file contains an reference to an custom defined Rust allocator named `Jemalloc`. To be able to use in our source, in addition of adding the reference to our code, I also had to add this crate to the project using this command:
 ```
-cargo add jemalloc
-
 # you can run both of theses executable examples
 cargo run --bin rust-define-global-allocator
 cargo run --bin rust-using-custom-allocator
