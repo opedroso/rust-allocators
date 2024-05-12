@@ -18,35 +18,40 @@ const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
 const ARENA_SIZE: usize = 1 * ONE_MEGABYTE; // must be multiple of 1 MB, but no more than 16 MB total (limit is number of bits in paragraph.next_free_idx)
 const PARAGRAPH_SIZE_IN_BYTES: usize = 16; // a paragraph is a 16 bytes chunk of memory; in our case which has an address that is on a 16 byte boundary
 const COUNT_PARAGRAPH_IDX: usize = (ARENA_SIZE/PARAGRAPH_SIZE_IN_BYTES) - 2; // count of paragraphs available for allocation 0..
-const MAX_PARAGRAPH_IDX: usize = COUNT_PARAGRAPH_IDX - 1; // all valid paragraph indices are less than this
+const MAX_PARAGRAPH_IDX: usize = COUNT_PARAGRAPH_IDX + 1; // all valid paragraph indices are less than this
 
 
 /// MemoryArena manages allocations within its static memory array
 /// It is meant to be written once by possibly multi-threaded user block producers
 /// There is no way to deallocate a single user block: only whole pool can be deallocated (all user blocks dealocated at once)
+/// No locks are held while allocating memory; intrinsics are used to allocate next block
+/// This design decision (optimization for allocation path) costs unused memory if last block cannot fit in space available
+/// Every instance of MemoryArena is Pin<Box<MemoryArena>>; this means it cannot be moved
+/// 
 /// 
 /// Allocations:
 /// Minimum allocation is 32 bytes (control area of 16 bytes + user block of up to 16 bytes) or ( 1 control paragraph + 1 user block paragraph)
 /// Maximum allocation with 1 Mib pool (as implemented) is 1_048_544 bytes (or 65_534 paragraphs) or (1 control paragraph + 65_533 user block paragraphs)
-/// Maximum user block allocation is then 1_048_528 bytes
-/// If a request is made for a block that would lay beyond pool capacity, the user gets error *and* pool is closed for new allocations (last block is wasted)
+/// Maximum user block allocation is then 1_048_528 bytes (= 16 bytes * 65_533 paragraphs)
+/// If a request is made for a user block that would lay beyond pool capacity, the user gets error *and* pool is closed for new allocations (last block is wasted)
 /// It is possible that last block request failed due to multi-threading usage
 /// In this case, pool will show that next free block have index larger than COUNT_PARAGRAPH_IDX
-/// This also indicates that the pool is full
-/// Iterating over the list of allocated blocks will stop at last successfully allocated block (paragraph next free block index will still be zero)
+/// This indicates that the pool is full
+/// Iterating over the list of allocated blocks will stop at last successfully allocated block (paragraph's next free block index will still be zero)
 /// Failed last alloc returns error to requester and arena's next free block index gets reset to MAX_PARAGRAPH_IDX (which is larger than COUNT_PARAGRAPH_IDX)
+/// It is possible that for a few instructions that the next free paragraph index be larger than MAX_PARAGRAPH_IDX
 /// 
 /// Alignment:
 /// Allocations are aligned to 16 byte boundary. Pool is aligned to 1 MiB boundary
 /// Any allocation can find its pool by shifting its address by 20 bits (2^20 = 1 MiB)
-/// Control paragraph has a signature that contains (pool base address, index where next allocation begins)
+/// Each control paragraph has a signature that contains (pool base address and index where next allocation begins)
 /// Last allocated block in pool will have (pool base addres, zero) in its control block
 /// Number of bits dedicated to index to next allocation has 20 bits but for 1 MiB implementation only 16 bits are used
 /// As there are no pointers in control data, only indices, pool can be memoy mapped to a different locations and still be valid
 /// Base address would have original mapping but that can be used to indicate that user block has not yet been processed after this new mapping
 /// 
 /// Stack requirement:
-/// Stack size for thread creating the MemoryArena has to be larger than 1 Mib + your functions requirement
+/// Stack size for thread creating the MemoryArena has to be larger than 1 Mib (MemoryArena requirement) + your functions requirement
 /// Suggestion is to create MemoryArenas from specific thread started with enough stack space (see tests for example)
 /// 
 #[repr(align(1_048_576))] // ONE_MEGABYTE boundary
@@ -87,9 +92,11 @@ impl Paragraph {
     // returns tuple (memory_arena_base_address, index_to_next_free_paragraph) when paragraph is first allocated
     // after the next free paragraph is allocated, it becomes a paragraph_index_of_next_allocated_paragraph
     pub fn get_paragraph_signature(&self) -> (u64, u16) {
-        let (a, b) = (self.paragraph_signature & 0xFFFFFFFFFFF00000, (self.paragraph_signature & 0x000000000000FFFF) as u16);
-        debug!("get paragraph.signature: (memory_arena_base_address: 0x{:x}, index_to_next_free_paragraph: 0x{:x})", a, b);
-        (a, b)
+        let (memory_arena_base_address, index_to_next_free_paragraph) =
+                    (self.paragraph_signature & 0xFFFFFFFFFFF00000, (self.paragraph_signature & 0x000000000000FFFF) as u16);
+        debug!("get paragraph.signature: (memory_arena_base_address: 0x{:x}, index_to_next_free_paragraph: 0x{:x})",
+                    memory_arena_base_address, index_to_next_free_paragraph);
+        (memory_arena_base_address, index_to_next_free_paragraph)
     }
 }
 
@@ -103,7 +110,6 @@ impl Default for Paragraph {
     }
 }
 
-/*
 impl From<*mut Paragraph> for Paragraph {
     fn from(raw_ptr: *mut Paragraph) -> Self {
         assert!(!raw_ptr.is_null(), "Received null pointer");
@@ -114,7 +120,7 @@ impl From<*mut Paragraph> for Paragraph {
         }
     }
 }
-*/
+
 
 impl MemoryArena {
     fn new() -> Pin<Box<MemoryArena>> {
