@@ -69,7 +69,7 @@ struct MemoryArena {
 }
 
 #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Paragraph {
     paragraph_signature: u64, // ((the base address of the arena)>>20)<<20) & next_[free/allocated]_paragraph_idx
     _available: u64, // not yet used
@@ -139,10 +139,16 @@ impl MemoryArena {
         pinned_boxed_arena
     }
 
-    fn set_signature_for_paragraph_at_idx(&self, next_free_paragraph_idx: usize, paragraph_idx: usize) {
+    fn get_mut_paragraph_at_idx(&self , paragraph_idx: usize) -> *mut Paragraph {
         unsafe {
             let mut_arena_memory = self.memory.get();
-            let paragraph = &mut (*mut_arena_memory)[paragraph_idx] as *mut Paragraph;
+            &mut (*mut_arena_memory)[paragraph_idx] as *mut Paragraph
+        }
+    }
+
+    fn set_signature_for_paragraph_at_idx(&self, next_free_paragraph_idx: usize, paragraph_idx: usize) {
+        unsafe {
+            let paragraph = self.get_mut_paragraph_at_idx(paragraph_idx);
             (*paragraph).set_paragraph_signature(next_free_paragraph_idx);
         }
     }
@@ -183,6 +189,43 @@ impl MemoryArena {
                 return None;
             }
         }
+    }
+}
+
+struct MemoryArenaIteratorMut<'a, T> {
+    arena: &'a mut MemoryArena,
+    current_index: usize,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: 'a> MemoryArenaIteratorMut<'a, T> {
+    /// Creates a new `MemoryArenaIteratorMut` for the given MemoryArena.
+    pub fn new(arena: &'a mut MemoryArena) -> Self {
+        Self {
+            arena,
+            current_index: 0, // Start at the beginning of the arena
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Check if there is one more item in the list of allocated items
+        let control_paragraph = self.arena.get_mut_paragraph_at_idx(self.current_index);
+        let (_memory_arena_base_address, index_to_next_free_paragraph) = unsafe {(*control_paragraph).get_paragraph_signature()};
+        if self.current_index >= index_to_next_free_paragraph as usize {
+            return None;
+        }
+
+        // Safety: We've checked for a valid allocation
+        let ptr = self.arena.get_mut_paragraph_at_idx(self.current_index+1);
+        let item = unsafe { &mut *(ptr as *mut u8 as *mut T) };
+
+        self.current_index = index_to_next_free_paragraph as usize;
+        Some(item)
     }
 }
 
@@ -318,6 +361,32 @@ mod tests {
         assert_eq!(boxed_paragraph.get_paragraph_signature().1, 0x222);
         assert_eq!(pinned_boxed_paragraph.get_paragraph_signature().1, 0x444);
     }
+
+    #[test]
+    fn test_paragraph_mut_iterator() {
+        let mut binding = MemoryArena::new();
+        let memory_arena = binding.deref_mut();
+        
+        // Allocate some Foo instances on the arena
+        for _ in 0..5 {
+            memory_arena.alloc_bytes(std::mem::size_of::<Paragraph>());
+        }
+        
+        // Create and use the mutable iterator
+        let iter = MemoryArenaIteratorMut::<Paragraph>::new(memory_arena);
+        for foo in iter {
+            // Do something with the &mut Foo reference (e.g., modify its fields)
+            foo._available += 1;
+            foo._available -= 1;
+            /*let control_paragraph = memory_arena.get_mut_paragraph_at_idx(iter.current_index);
+            let (memory_arena_base_address, index_to_next_free_paragraph) = unsafe{(*control_paragraph).get_paragraph_signature()};
+            assert_eq!(memory_arena_base_address, &mut memory_arena as *const _ as u64); // validate we are in the expected arena
+            assert!(MAX_PARAGRAPH_IDX > index_to_next_free_paragraph as usize);
+            assert_eq!(foo as *const Paragraph, memory_arena.get_mut_paragraph_at_idx(iter.current_index))
+            */
+        }
+    }
+    
 }
 
 fn print_stack_extents_win() {
