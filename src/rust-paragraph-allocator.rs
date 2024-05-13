@@ -128,14 +128,14 @@ impl MemoryArena {
         let mut pinned_boxed_arena = Box::pin(MemoryArena {
             memory: UnsafeCell::new([Paragraph::default(); COUNT_PARAGRAPH_IDX]),
             _available: 0,
-            next_available_paragraph_idx: AtomicCell::<usize>::new(0),
+            next_available_paragraph_idx: AtomicCell::<usize>::new(1),
             future_next_arena_base_addr: AtomicCell::<u64>::new(0),
             signature: 0,
         });
         let arena = pinned_boxed_arena.deref_mut();
         arena.set_signature();
         arena.set_signature_for_paragraph_at_idx(1, 0);
-        debug!("new: Pin<Box<MemoryArena>>: {:p}, size: {}, signature: 0x{:016x}", arena, std::mem::size_of_val(arena), arena.get_signature());
+        debug!("new: Pin<Box<MemoryArena>>: {:p}, size: {}, arena signature: 0x{:016x}", arena, std::mem::size_of_val(arena), arena.get_signature());
         pinned_boxed_arena
     }
 
@@ -163,7 +163,7 @@ impl MemoryArena {
     fn set_signature(&mut self) {
         let signature = ((self as *const _ as u64 ) >> 20) << 20;
         self.signature = signature; // equivalent to (&arena as *const _) & 0xFFFFFFFFFFF00000
-        debug!("set_signature: arena address: {:p}, size: {}, signature: 0x{:016x}", self, std::mem::size_of_val(self), self.signature);
+        debug!("set_signature: arena address: {:p}, size: {}, arena signature: 0x{:016x}", self, std::mem::size_of_val(self), self.signature);
     }
     fn get_signature(&self) -> u64 {
         self.signature
@@ -171,14 +171,20 @@ impl MemoryArena {
 
     fn alloc_bytes(&self, num_bytes: usize) -> Option<NonNull<u8>> {
         let layout = Layout::from_size_align(num_bytes, std::mem::size_of::<Paragraph>()).unwrap();
-        self.alloc_aligned_bytes(layout)
+        match self.alloc_aligned_bytes(layout) {
+            Some(ptr) => Some(ptr),
+            None => None
+        }
     }
     fn alloc_aligned_bytes(&self, layout: Layout) -> Option<NonNull<u8>> {
         unsafe {
             assert!(layout.align() <= std::mem::size_of::<Paragraph>(), "alignment > 16 not yet implemented");
             let num_paragraphs = 1 + max(layout.size() / std::mem::size_of::<Paragraph>(), 1); // header + user_block
             let index = self.next_available_paragraph_idx.fetch_add(num_paragraphs);
-            if index + num_paragraphs <= MAX_PARAGRAPH_IDX {
+            assert!(index > 0);
+            let next_available_paragraph_idx = index + num_paragraphs;
+            if next_available_paragraph_idx <= MAX_PARAGRAPH_IDX {
+                self.set_signature_for_paragraph_at_idx(next_available_paragraph_idx, index-1);
                 let mut_arena_memory = self.memory.get();
                 NonNull::new(&mut (*mut_arena_memory)[index] as *mut _ as *mut u8)
             } else {
@@ -224,7 +230,7 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
         let ptr = self.arena.get_mut_paragraph_at_idx(self.current_index+1);
         let item = unsafe { &mut *(ptr as *mut u8 as *mut T) };
 
-        self.current_index = index_to_next_free_paragraph as usize;
+        self.current_index = (index_to_next_free_paragraph-1) as usize;
         Some(item)
     }
 }
@@ -246,6 +252,12 @@ fn main() {
 mod tests {
     use super::*;
     use std::thread;
+    use env_logger::{Builder, Env};
+
+    #[test]
+    fn test_enable_env_logger() {
+        Builder::from_env(Env::default().default_filter_or("info")).init();
+    }
 
     // cargo test --bin rust-paragraph-allocator test_validate_sizes -- --test-threads=1 --nocapture
     #[test]
@@ -268,8 +280,7 @@ mod tests {
                 (&mut (*mut_memory)[0] as *mut Paragraph, (*mut_memory)[0].paragraph_signature)
             };
 
-            debug!("test_validate_sizes: header_paragraph          : 0x{:016x}", header_paragraph as *const _ as u64);
-            debug!("test_validate_sizes: header_paragraph.signature: 0x{:016x}", header_signature);
+            debug!("test_validate_sizes: header_paragraph          : 0x{:016x}, paragraph signature: 0x{:016x}", header_paragraph as *const _ as u64, header_signature);
         });
 
         // Wait for the spawned thread to finish
@@ -368,22 +379,33 @@ mod tests {
         let memory_arena = binding.deref_mut();
         
         // Allocate some Foo instances on the arena
-        for _ in 0..5 {
-            memory_arena.alloc_bytes(std::mem::size_of::<Paragraph>());
+        for idx in 0..5 {
+            if let Some(ptr) = memory_arena.alloc_bytes(std::mem::size_of::<Paragraph>()) {
+                println!("ptr[{}] = {:p}", idx, ptr);
+            }
         }
         
         // Create and use the mutable iterator
         let iter = MemoryArenaIteratorMut::<Paragraph>::new(memory_arena);
+        let mut idx = 0;
         for foo in iter {
             // Do something with the &mut Foo reference (e.g., modify its fields)
             foo._available += 1;
-            foo._available -= 1;
             /*let control_paragraph = memory_arena.get_mut_paragraph_at_idx(iter.current_index);
             let (memory_arena_base_address, index_to_next_free_paragraph) = unsafe{(*control_paragraph).get_paragraph_signature()};
             assert_eq!(memory_arena_base_address, &mut memory_arena as *const _ as u64); // validate we are in the expected arena
             assert!(MAX_PARAGRAPH_IDX > index_to_next_free_paragraph as usize);
             assert_eq!(foo as *const Paragraph, memory_arena.get_mut_paragraph_at_idx(iter.current_index))
             */
+            println!("setting item[{}]._available: {}", idx, foo._available);
+            idx = idx + 1;
+        }
+        let iter2 = MemoryArenaIteratorMut::<Paragraph>::new(memory_arena);
+        idx = 0;
+        for foo in iter2 {
+            // Do something with the &mut Foo reference (e.g., modify its fields)
+            println!("getting item[{}]._available: {}", idx, foo._available);
+            idx = idx + 1;
         }
     }
     
@@ -403,7 +425,7 @@ fn print_stack_extents_win() {
         let _ = CloseHandle(thread_handle);
 
         // Print the stack addresses
-        info!("\nprint_stack_extents_win: Stack base address : 0x{:016x}", stack_base);
+        info!("print_stack_extents_win: Stack base address : 0x{:016x}", stack_base);
         info!("print_stack_extents_win: Stack limit address: 0x{:016x}", stack_limit);
         let stack_extent = stack_limit - stack_base;
         info!("print_stack_extents_win: Stack extent       : {}  (0x{:x})", stack_extent, stack_extent);
