@@ -4,7 +4,7 @@
 setlocal
 :: uncomment next line if you want to build using nightly toolchain
 ::set TOOLCHAIN=+nightly
-cargo %TOOLCHAIN% clean
+if /I "%~1" == "-c" cargo %TOOLCHAIN% clean
 cargo %TOOLCHAIN% build
 cargo %TOOLCHAIN% test --no-run
 :: this next line sets the stack size for all executables built to be 10 MB reserved 7 committed
