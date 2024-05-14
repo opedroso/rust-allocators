@@ -2,7 +2,7 @@
 name = "rust-allocators"
 version = "0.1.0"
 edition = "2021"
-default-run = "rust-define-global-allocator"  # Specify default binary name here
+default-run = "rust-paragraph-allocator"  # Specify default binary name here
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,10 +30,10 @@ features = [
 ]
 
 [profile.dev]
-debug = true  # Enable debug information
+debug = true  # Enable debug asserts; also triggers 132 KiB allocation arena that can be debugged (stack size limitation)
 
 [profile.release]
-debug = true  # Enable debug information
+debug = false  # disable debug asserts: also triggers 16 MB allocation arena
 
 [profile.test]
-debug = true  # Enable debug information
+debug = false  # disable debug asserts: also triggers 16 MB allocation arena
