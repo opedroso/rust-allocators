@@ -267,6 +267,10 @@ impl MemoryArena {
             }
         }
     }
+
+    pub fn iter_mut<'a, T: 'a>(&'a mut self) -> MemoryArenaIteratorMut<'a, T> {
+        MemoryArenaIteratorMut::new(self) 
+    }
 }
 
 struct MemoryArenaIteratorMut<'a, T> {
@@ -498,7 +502,7 @@ mod tests {
             info!("able to make {} usable allocations of {} bytes each", last_alloc_idx, size_of::<Paragraph>());
             
             // Create and use the mutable iterator
-            let iter = MemoryArenaIteratorMut::<Paragraph>::new(memory_arena);
+            let iter = memory_arena.iter_mut::<Paragraph>();
             let mut idx = 0;
             for foo in iter {
                 // Do something with the &mut Foo reference (e.g., modify its fields)
@@ -508,7 +512,7 @@ mod tests {
             }
             assert_eq!(idx, last_alloc_idx);
             info!("able to iterate {} usable allocations of {} bytes each", idx, size_of::<Paragraph>());
-            let iter2 = MemoryArenaIteratorMut::<Paragraph>::new(memory_arena);
+            let iter2 = memory_arena.iter_mut::<Paragraph>();
             idx = 0;
             for foo in iter2 {
                 // Do something with the &mut Foo reference (e.g., modify its fields)
