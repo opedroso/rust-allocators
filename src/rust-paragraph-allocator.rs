@@ -268,6 +268,13 @@ impl MemoryArena {
         }
     }
 
+    /// Usage:
+    /// let mut arena = MemoryArena::new(); // ... fill the arena
+    ///
+    /// for block in arena.iter_mut::<MyType>() {
+    ///       // Do something with the block
+    /// }
+    /// 
     pub fn iter_mut<'a, T: 'a>(&'a mut self) -> MemoryArenaIteratorMut<'a, T> {
         MemoryArenaIteratorMut::new(self) 
     }
