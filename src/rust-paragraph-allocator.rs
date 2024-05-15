@@ -1,6 +1,5 @@
 #![cfg(windows)]
 #![allow(dead_code)]
-#![cfg(target_pointer_width = "64")]
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use crossbeam::atomic::*;
@@ -103,7 +102,7 @@ pub mod definitions
 pub mod definitions
 {
     pub const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
-    pub const MEMORY_ARENA_SIZE_IN_BYTES: usize = ONE_MEGABYTE/8; // must be less than 1 MiB for using debugger in the IDE since default stack is 1 Mib
+    pub const MEMORY_ARENA_SIZE_IN_BYTES: usize = ONE_MEGABYTE/16; // must be less than 1 MiB for using debugger in the IDE since default stack is 1 Mib
     pub const SIGNATURE_MASK: u64 = !((MEMORY_ARENA_SIZE_IN_BYTES-1) as u64); // must fit significant (that is non-zero) base address in the signature bits
     pub const PARAGRAPH_IDX_MASK: u64 = !(SIGNATURE_MASK); // the lower bits of signature will have the index of the next (free or alloc'ed) paragraph
     pub const PARAGRAPH_SIZE_IN_BYTES: usize = 16; // a paragraph is a 16 bytes chunk of memory; in our case which has an address that is on a 16 byte boundary
@@ -114,7 +113,7 @@ pub mod definitions
     use std::cell::UnsafeCell;
     use crossbeam::atomic::*;
 
-    #[repr(align(131_072))] // must be literal value of MEMORY_ARENA_SIZE_IN_BYTES
+    #[repr(align(65_536))] // must be literal value of MEMORY_ARENA_SIZE_IN_BYTES
     #[derive(Debug)]
     pub(crate) struct MemoryArena {
         // 1 MB = Paragraph[65_536]
@@ -190,7 +189,11 @@ impl From<*mut Paragraph> for Paragraph {
 
 
 impl MemoryArena {
+    
     fn new() -> Pin<Box<MemoryArena>> {
+        // even though the newly created MemoryArena will be instantiated on the heap (that is why we use Box::pin() to create it)
+        // the compiler will require a temporary array on the stack size_of([Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA])
+        // in RELEASE builds, this is 32 bytes shy of 16 Mib, so the stack needs to be larger than 16 MiB for this code to succeed
         let mut pinned_boxed_arena = Box::pin(MemoryArena {
             memory: UnsafeCell::new([Paragraph  {
                 paragraph_signature: 0, // Base address is initially 0
@@ -336,7 +339,7 @@ mod tests {
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_validate_sizes".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
-        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena);
+        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
         let sizeof_paragraph = size_of::<Paragraph>();
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, sizeof_paragraph);
 
@@ -370,7 +373,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_arena_new() {
         debug!("test_arena_new: starting");
 
@@ -388,7 +390,8 @@ mod tests {
             print_stack_extents_win();
             let mut arena = MemoryArena::new();
             let allocator = arena.deref_mut();
-            assert_eq!(allocator.get_signature(), allocator as *const _ as u64);
+            let masked_allocator = (allocator as *const _ as u64) & SIGNATURE_MASK;
+            assert_eq!(allocator.get_signature(), masked_allocator);
             debug!("test_arena_new: stopping thread");
         });
 
@@ -407,7 +410,7 @@ mod tests {
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_single_alloc_and_contains".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
-        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena);
+        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
         let sizeof_paragraph = size_of::<Paragraph>();
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, sizeof_paragraph);
 
@@ -438,7 +441,7 @@ mod tests {
         // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
             // This closure runs in the new thread
-            assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, size_of::<MemoryArena>());
+            assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, size_of::<MemoryArena>(), "make sure you changed the alignment if you changed the arena size; requires source edit");
             assert_eq!(PARAGRAPH_SIZE_IN_BYTES, size_of::<Paragraph>());
             let arena = MemoryArena::new();
             let deref_arena = arena.deref();
@@ -496,7 +499,7 @@ mod tests {
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_paragraph_mut_iterator".into());
         
         let sizeof_memory_arena = size_of::<MemoryArena>();
-        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena);
+        assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
         let sizeof_paragraph = size_of::<Paragraph>();
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, sizeof_paragraph);
 
@@ -605,12 +608,12 @@ fn init_env_logger() {
     let offset_to_end = offset_of!(MemoryArena, signature) + size_of::<u64>();
     debug!("Offset past end of Memory_Arena                     : {}", offset_to_end);
 
-    assert_eq!(sizeof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES);
+    assert_eq!(sizeof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
     assert!(sizeof_allocation_arena < MEMORY_ARENA_SIZE_IN_BYTES);
     
     #[cfg(not(debug_assertions))]
-    assert_eq!(alignof_memory_arena, 1_048_576);
+    assert_eq!(alignof_memory_arena, core::cmp::min(1_048_576, MEMORY_ARENA_SIZE_IN_BYTES)); // RELEASE alignment is 1 Mib
     #[cfg(debug_assertions)]
-    assert_eq!(alignof_memory_arena, 131_072);
+    assert_eq!(alignof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
 
 }
