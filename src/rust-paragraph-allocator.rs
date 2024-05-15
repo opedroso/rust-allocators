@@ -1,10 +1,8 @@
-#![cfg(windows)]
 #![allow(dead_code)]
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use crossbeam::atomic::*;
 use std::ptr::NonNull;
-use windows::Win32::Foundation::CloseHandle;
 use std::ops::{BitOr, BitAnd};
 use std::default::Default;
 use std::pin::Pin;
@@ -308,21 +306,6 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
     }
 }
 
-fn main() {
-    init_env_logger();
-    print_stack_extents_win();
-
-    let arena = MemoryArena::new();
-    // Example usage:
-    let layout = Layout::from_size_align(size_of::<Vec<[u32; 4]>>(), 16).unwrap();
-    if let Some(ptr) = arena.alloc_aligned_bytes(layout) {
-        debug!("main: arena.alloc_aligned_bytes() returned {:p}", ptr);
-        assert!(arena.contains(ptr));
-    } else {
-        error!("allocation failed")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,7 +337,6 @@ mod tests {
             let mut_arena = arena.deref_mut();
             let size_mut_arena = std::mem::size_of_val(mut_arena);
             assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, size_mut_arena);
-            print_stack_extents_win();
 
             let (header_paragraph, header_paragraph_signature) = unsafe {
                 let mut_memory = mut_arena.memory.get();
@@ -387,7 +369,6 @@ mod tests {
         // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
             debug!("test_arena_new: starting thread");
-            print_stack_extents_win();
             let mut arena = MemoryArena::new();
             let allocator = arena.deref_mut();
             let masked_allocator = (allocator as *const _ as u64) & SIGNATURE_MASK;
@@ -446,7 +427,6 @@ mod tests {
             let arena = MemoryArena::new();
             let deref_arena = arena.deref();
             assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, std::mem::size_of_val(deref_arena));
-            print_stack_extents_win();
 
             assert_eq!(PARAGRAPH_SIZE_IN_BYTES, size_of::<u128>());
             let num_bytes = size_of::<u128>(); 
@@ -479,7 +459,6 @@ mod tests {
         paragraph.set_paragraph_signature(0x111);
         boxed_paragraph.set_paragraph_signature(0x222);
         pinned_boxed_paragraph.set_paragraph_signature(0x444);
-        print_stack_extents_win();
         let (base_addr, next_free_idx) = paragraph.get_paragraph_signature();
         debug!("main: paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", &paragraph, std::mem::size_of_val(&paragraph), base_addr, next_free_idx);
         let (base_addr, next_free_idx) = boxed_paragraph.get_paragraph_signature();
@@ -552,27 +531,6 @@ mod tests {
     
 }
 
-fn print_stack_extents_win() {
-    unsafe {
-        // Get the current thread handle
-        let thread_handle = windows::Win32::System::Threading::GetCurrentThread();
-
-        // Initialize variables to store stack limits
-        let mut stack_base: usize = 0;
-        let mut stack_limit: usize = 0;
-
-        // Retrieve the stack limits
-        windows::Win32::System::Threading::GetCurrentThreadStackLimits(&mut stack_base, &mut stack_limit);
-        let _ = CloseHandle(thread_handle);
-
-        // Print the stack addresses
-        debug!("print_stack_extents_win: Stack base address : 0x{:016x}", stack_base);
-        debug!("print_stack_extents_win: Stack limit address: 0x{:016x}", stack_limit);
-        let stack_extent = stack_limit - stack_base;
-        debug!("print_stack_extents_win: Stack extent       : {}  (0x{:x})", stack_extent, stack_extent);
-    }
-}
-
 fn init_env_logger() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
 
@@ -616,4 +574,18 @@ fn init_env_logger() {
     #[cfg(debug_assertions)]
     assert_eq!(alignof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
 
+}
+
+fn main() {
+    init_env_logger();
+
+    let arena = MemoryArena::new();
+    // Example usage:
+    let layout = Layout::from_size_align(size_of::<Vec<[u32; 4]>>(), 16).unwrap();
+    if let Some(ptr) = arena.alloc_aligned_bytes(layout) {
+        debug!("main: arena.alloc_aligned_bytes() returned {:p}", ptr);
+        assert!(arena.contains(ptr));
+    } else {
+        error!("allocation failed")
+    }
 }
