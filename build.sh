@@ -5,7 +5,7 @@ cargo build
 cargo build --release
 cargo test --no-run
 # edit stack on excutables
-export RUST_LOG=info
+export RUST_LOG=error
 cargo test -- --test-threads=1 --nocapture
 cargo run --bin rust-define-global-allocator -- --nocapture
 cargo run --bin rust-paragraph-allocator -- --nocapture
