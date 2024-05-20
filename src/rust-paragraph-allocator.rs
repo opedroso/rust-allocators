@@ -245,49 +245,48 @@ impl MemoryArena {
         }
     }
 
+    /// returns largest user block still allocatable in this memory arena
     fn room_left_in_bytes_mut(&mut self) -> usize {
         self.room_left_in_bytes()
     }
+    /// returns largest user block still allocatable in this memory arena
     fn room_left_in_bytes(&self) -> usize {
         let count_free_paragraphs = self.room_left_in_paragraphs();
         if count_free_paragraphs > 0 {
             (count_free_paragraphs - 1) * PARAGRAPH_SIZE_IN_BYTES // -1 is for the control paragraph needed for each allocation
         } else {
-            count_free_paragraphs
+            0
         }
     }
 
-    fn alloc_bytes(&self, num_bytes: usize) -> Option<NonNull<u8>> {
+    fn alloc_bytes_zeroed(&self, num_bytes: usize) -> Option<NonNull<u8>> {
         let layout = Layout::from_size_align(num_bytes, size_of::<Paragraph>()).unwrap();
-        match self.alloc_aligned_bytes(layout) {
-            Some(ptr) => Some(ptr),
-            None => None
-        }
+        self.alloc_zeroed(layout)
     }
-    fn alloc_aligned_bytes(&self, layout: Layout) -> Option<NonNull<u8>> {
+    fn alloc_zeroed(&self, layout: Layout) -> Option<NonNull<u8>> {
         let size = layout.size();
         let room_left_bytes = self.room_left_in_bytes();
         if size == 0 || layout.align() > 16 || size > room_left_bytes {
             // if layout.size() == 0 { warn!("zero byte allocation requested but not fullfiled"); } // turned off because it is too noisy
-            if layout.align() > size_of::<Paragraph>() { warn!("alignment > 16 not yet supported"); };
+            if layout.align() > size_of::<Paragraph>() { panic!("alignment > 16 not yet supported"); };
             if size > self.room_left_in_bytes() { warn!("largest user block possible is {} bytes", room_left_bytes); }
             return None;
         }
-        unsafe {
-            let num_paragraphs = 1 + max(size / size_of::<Paragraph>(), 1); // header + user_block
-            let base_alloc_idx = self.next_available_paragraph_idx.fetch_add(num_paragraphs);
-            let user_base_alloc_idx = base_alloc_idx + 1;
-            let next_available_paragraph_idx = base_alloc_idx + num_paragraphs;
-            debug!("base_alloc_idx= {}, next available paragraph idx= {}", base_alloc_idx, next_available_paragraph_idx);
-            if next_available_paragraph_idx <= COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA {
-                self.set_signature_for_paragraph_at_idx(next_available_paragraph_idx, base_alloc_idx);
+        let num_paragraphs = 1 + max(size / size_of::<Paragraph>(), 1); // header + user_block
+        let base_alloc_idx = self.next_available_paragraph_idx.fetch_add(num_paragraphs);
+        let user_base_alloc_idx = base_alloc_idx + 1;
+        let next_available_paragraph_idx = base_alloc_idx + num_paragraphs;
+        debug!("base_alloc_idx= {}, next available paragraph idx= {}", base_alloc_idx, next_available_paragraph_idx);
+        if next_available_paragraph_idx <= COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA {
+            self.set_signature_for_paragraph_at_idx(next_available_paragraph_idx, base_alloc_idx);
+            unsafe {
                 let mut_arena_memory = self.memory.get();
                 debug!("successfully allocated {:5} bytes aligned at {} byte boundary (used {} bytes from arena)", size, layout.align(), num_paragraphs * PARAGRAPH_SIZE_IN_BYTES);
                 NonNull::new(&mut (*mut_arena_memory)[user_base_alloc_idx] as *mut _ as *mut u8)
-            } else {
-                debug!("attempt to allocate {} bytes: room_left_bytes: {}", size, self.room_left_in_bytes());
-                return None;
             }
+        } else {
+            debug!("attempt to allocate {} bytes: room_left_bytes: {}", size, self.room_left_in_bytes());
+            return None;
         }
     }
 
@@ -486,7 +485,7 @@ mod tests {
 
             let largest_possible_user_block_size = allocator.room_left_in_bytes_mut();
             let layout = Layout::from_size_align(largest_possible_user_block_size, 16).unwrap();
-            if let Some(ptr) = allocator.alloc_aligned_bytes(layout) {
+            if let Some(ptr) = allocator.alloc_zeroed(layout) {
                 fill_in_allocation(ptr.as_ptr(), layout.size());
                 assert!(allocator.contains(ptr));
                 assert!(validate_pattern(ptr.as_ptr(), layout.size()));
@@ -519,7 +518,7 @@ mod tests {
             assert_eq!(PARAGRAPH_SIZE_IN_BYTES, size_of::<u128>());
             let num_bytes = size_of::<u128>(); 
             let mut count_allocs = 0;
-            while let Some(ptr) = deref_arena.alloc_bytes(num_bytes) {
+            while let Some(ptr) = deref_arena.alloc_bytes_zeroed(num_bytes) {
                 count_allocs += 1;
                 assert!(arena.contains(ptr));
                 let ptr_mut_u128 = ptr.as_ptr() as *mut u128;
@@ -578,7 +577,7 @@ mod tests {
             let bytes_room_left = memory_arena.room_left_in_bytes_mut();
             debug!("actual bytes_room_left {} bytes in a {} arena", bytes_room_left, MEMORY_ARENA_SIZE_IN_BYTES);
             debug!("attempting to allocate all {} bytes in a {} arena", bytes_room_left, MEMORY_ARENA_SIZE_IN_BYTES);
-            if let Some(_ptr) = memory_arena.alloc_bytes(bytes_room_left) {
+            if let Some(_ptr) = memory_arena.alloc_bytes_zeroed(bytes_room_left) {
                 debug!("it is possible to allocate {} bytes in a {} arena, room_left_in_bytes: {}", bytes_room_left, MEMORY_ARENA_SIZE_IN_BYTES, memory_arena.room_left_in_bytes());
             } else {
                 warn!("it is NOT possible to allocate {} bytes in a {} arena, room_left_in_bytes: {}", bytes_room_left, MEMORY_ARENA_SIZE_IN_BYTES, memory_arena.room_left_in_bytes());
@@ -594,7 +593,7 @@ mod tests {
                 debug!("attempting to allocate {} bytes in a {} arena", size, MEMORY_ARENA_SIZE_IN_BYTES);
                 let mut binding = MemoryArena::new();
                 let memory_arena = binding.deref_mut();
-                if let Some(ptr) = memory_arena.alloc_aligned_bytes(layout) {
+                if let Some(ptr) = memory_arena.alloc_zeroed(layout) {
                     debug!("it is possible to allocate {} bytes in a {} arena, room_left_in_bytes: {}", size, MEMORY_ARENA_SIZE_IN_BYTES, memory_arena.room_left_in_bytes());
                     assert!(memory_arena.contains(ptr));
                 } else {
@@ -631,12 +630,12 @@ mod tests {
             let mut last_alloc_idx = 0;
             for idx in 0..2_000_000 {
                 let num_bytes_requested = idx % PARAGRAPH_SIZE_IN_BYTES;
-                if let Some(ptr) = memory_arena.alloc_bytes(num_bytes_requested) {
-                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_bytes()", last_alloc_idx, ptr);
+                if let Some(ptr) = memory_arena.alloc_bytes_zeroed(num_bytes_requested) {
+                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_bytes_zeroed()", last_alloc_idx, ptr);
                     last_alloc_idx = last_alloc_idx+1;
                 }
-                if let Some(ptr) = memory_arena.alloc_aligned_bytes(layout) {
-                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_aligned_bytes()", last_alloc_idx, ptr);
+                if let Some(ptr) = memory_arena.alloc_zeroed(layout) {
+                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_zeroed()", last_alloc_idx, ptr);
                     last_alloc_idx = last_alloc_idx+1;
                 }
                 if memory_arena.room_left_in_bytes() < PARAGRAPH_SIZE_IN_BYTES {
@@ -666,7 +665,7 @@ mod tests {
                 idx2 = idx2 + 1;
             }
             assert_eq!(idx2, last_alloc_idx); // verify expected number of items was iterated over
-            assert_eq!(idx2, idx); // verify two iterators gave same results over multiple iteration
+            assert_eq!(idx2, idx); // verify two iterators gave same results over multiple iterations
             info!("able to iterate {} usable allocations of {} bytes each", idx2, size_of::<Paragraph>());
         });
 
@@ -732,8 +731,8 @@ fn main() {
     let arena = MemoryArena::new();
     // Example usage:
     let layout = Layout::from_size_align(size_of::<Vec<[u32; 4]>>(), 16).unwrap();
-    if let Some(ptr) = arena.alloc_aligned_bytes(layout) {
-        debug!("main: arena.alloc_aligned_bytes() returned {:p}", ptr);
+    if let Some(ptr) = arena.alloc_zeroed(layout) {
+        debug!("main: arena.alloc_zeroed() returned {:p}", ptr);
         assert!(arena.contains(ptr));
     } else {
         error!("allocation failed")
