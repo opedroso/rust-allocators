@@ -579,7 +579,7 @@ mod tests {
 
         // // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
-            init_env_logger();
+            // init_env_logger();
             let mut binding = MemoryArena::new();
             let memory_arena = binding.deref_mut();
 
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_paragraph_mut_iterator() {
-        init_env_logger();
+        // init_env_logger();
 
         // Create a thread builder with necessary stack size
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_paragraph_mut_iterator".into());
