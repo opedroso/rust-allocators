@@ -45,7 +45,7 @@ The only other difference is that both of these expressions are valid:
 ```rust
   assert_eq!(my_class_instance_on_stack.member_data, 1i64);
   assert_eq!(my_class_instance_in_the_heap.member_data, 2i64);
-´´´
+```
 
 ## Rust Memory Allocators
 
@@ -58,9 +58,13 @@ To implement a custom global allocator, you can create a type that implements th
 Example of a custom allocator can be see in our source [rust-define-global-allocator.rs](./src/rust-define-global-allocator.rs) file contains an implementation of the Rust GlobalAlloc trait which is what Rust calls an interface.
 
 ```
-# you can run both of theses executable examples
-cargo run --bin rust-define-global-allocator
-cargo run --bin rust-using-custom-allocator
+# you can run both of theses executable examples  
+cargo run --bin rust-define-global-allocator  
+cargo run --bin rust-paragraph-allocator
+# you can also run their tests
+set RUST_LOG=info
+cargo test
+cargo test --release
 ```
 
 
