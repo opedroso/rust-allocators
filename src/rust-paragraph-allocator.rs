@@ -20,8 +20,8 @@ use crate::definitions::*;
 /// No locks are held while allocating memory; intrinsics are used to allocate next block
 /// This design decision (optimization for allocation path) costs unused memory if last block cannot fit in space available
 /// Every instance of MemoryArena is Pin<Box<MemoryArena>>; this means it cannot be moved
-/// 
-/// 
+///
+///
 /// Allocations:
 /// Minimum allocation is 32 bytes (control area of 16 bytes + user block of up to 16 bytes) or ( 1 control paragraph + 1 user block paragraph)
 /// Maximum allocation with 1 Mib pool (as implemented) is 1_048_544 bytes (or 65_534 paragraphs) or (1 control paragraph + 65_533 user block paragraphs)
@@ -31,7 +31,7 @@ use crate::definitions::*;
 /// In this case, pool will show that next free block have index larger than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
 /// This indicates that the pool is full
 /// Iterating over the list of allocated blocks will stop at last successfully allocated block (paragraph's next free block index will still be zero)
-/// 
+///
 /// Alignment:
 /// Allocations are aligned to 16 byte boundary. Pool is aligned to 1 MiB boundary
 /// Any allocation can find its pool by shifting its address by 20 bits (2^20 = 1 MiB)
@@ -40,11 +40,11 @@ use crate::definitions::*;
 /// Number of bits dedicated to index to next allocation has 20 bits but for 1 MiB implementation only 16 bits are used
 /// As there are no pointers in control data, only indices, pool can be memoy mapped to a different locations and still be valid
 /// Base address would have original mapping but that can be used to indicate that user block has not yet been processed after this new mapping
-/// 
+///
 /// Stack requirement:
 /// Stack size for thread creating the MemoryArena has to be larger than 1 Mib (MemoryArena requirement) + your functions requirement
 /// Suggestion is to create MemoryArenas from specific thread started with enough stack space (see tests for example)
-/// 
+///
 
 /*
 bits_in_arena_alloc	alignment	count_paragraphs	bits_in_paragraph_idx	IDX_MASK
@@ -113,13 +113,14 @@ pub mod definitions
     pub(crate) struct MemoryArena {
         // 1 MB = Paragraph[65_536]
         // memory arena for allocation begins here
-        pub(crate) memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>, // indices 0..65_533 // memory must be first memory address within MemoryArena
+        pub(crate) memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>, // indices 0..65_533 // memory must be first used address within MemoryArena
         // paragraph[65534] // = 1 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
-        pub(crate) _available: u64, // contents not yet used, but must be first variable past memory (or update function contains)
+        pub(crate) _available: u64, // contents not yet used, but must be first variable past memory (or change the function contains() accordingly)
         pub(crate) next_available_paragraph_idx: AtomicCell::<usize>, // value must be less than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA; index into memory array that is free for next allocation
         // paragraph[65535] // = 2 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA - last 16 bytes in 1 MB block
         pub(crate) future_next_arena_base_addr: AtomicCell::<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
         pub(crate) signature: u64, // ((the base address of the arena)>>20)
+        // Note: next_available_paragraph_idx and future_next_arena_base_addr *must not* be in same paragraph due to intrinsic locking used to access them
     }
     #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
     #[derive(Copy, Clone, Debug)]
@@ -131,12 +132,12 @@ pub mod definitions
 
 
 // Paragraph represents a 16 byte chunk of memory
-// there will be one before every arena allocation to indicate where the allocation ends and next allocation begins
+// there will be one header/control paragraph before every arena allocation to indicate where the allocation ends and next allocation begins
 // allocation blocks will always be multiple of 16 byte chunks
-// when a single byte allocation is requested, a 32 byte allocation will be dedicated to it
-// when a 16 byte allocation is requested, a 32 byte allocation will be dedicated to it
-// when a 32 byte allocation is requested, a 48 byte allocation will take place
-// there is always a header paragraph that indicates where next block begins or where the next free block begins
+// when a single byte allocation is requested, a 32 byte allocation will be dedicated to it (1 control paragraph + 1 data paragraph)
+// when a 16 byte allocation is requested, a 32 byte allocation will be dedicated to it (1 control paragraph + 1 data paragraph)
+// when a 32 byte allocation is requested, a 48 byte allocation will take place (1 control paragraph + 2 data paragraphs)
+// there is always a header/control paragraph that indicates where next block begins or where the next free block begins
 impl Paragraph {
     pub fn new() -> Self {
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, size_of::<Paragraph>()); // must forever be valid since this is a paragraph chunk allocator
@@ -184,11 +185,11 @@ impl From<*mut Paragraph> for Paragraph {
 
 
 impl MemoryArena {
-    
+
     fn new() -> Pin<Box<MemoryArena>> {
         // even though the newly created MemoryArena will be instantiated on the heap (that is why we use Box::pin() to create it)
         // the compiler will require a temporary array on the stack size_of([Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA])
-        // in RELEASE builds, this is 32 bytes shy of 16 Mib, so the stack needs to be larger than 16 MiB for this code to succeed
+        // in RELEASE builds, this is 32 bytes shy of 16 Mib, so the stack of the calling thread needs to be larger than 16 MiB for this code to succeed
         let mut pinned_boxed_arena = Box::pin(MemoryArena {
             memory: UnsafeCell::new([Paragraph  {
                 paragraph_signature: 0, // Base address is initially 0
@@ -264,16 +265,21 @@ impl MemoryArena {
         self.alloc_zeroed(layout)
     }
     fn alloc_zeroed(&self, layout: Layout) -> Option<NonNull<u8>> {
+        // prior to allocation, verify that there is still enough room available in the arena
         let size = layout.size();
         let room_left_bytes = self.room_left_in_bytes();
         if size == 0 || layout.align() > 16 || size > room_left_bytes {
-            // if layout.size() == 0 { warn!("zero byte allocation requested but not fullfiled"); } // turned off because it is too noisy
+            if layout.size() == 0 { warn!("zero byte allocation requested but not fullfiled"); } // turned off because it is too noisy
             if layout.align() > size_of::<Paragraph>() { panic!("alignment > 16 not yet supported"); };
-            if size > self.room_left_in_bytes() { warn!("largest user block possible is {} bytes", room_left_bytes); }
+            if size > room_left_bytes && room_left_bytes > 0 { warn!("largest user block possible is {} bytes", room_left_bytes); }
             return None;
         }
         let num_paragraphs = 1 + max(size / size_of::<Paragraph>(), 1); // header + user_block
+
+        // allocation happens here
         let base_alloc_idx = self.next_available_paragraph_idx.fetch_add(num_paragraphs);
+
+        // verify there was not a race condition and we ended up with an allocation past the end of the arena
         let user_base_alloc_idx = base_alloc_idx + 1;
         let next_available_paragraph_idx = base_alloc_idx + num_paragraphs;
         debug!("base_alloc_idx= {}, next available paragraph idx= {}", base_alloc_idx, next_available_paragraph_idx);
@@ -285,6 +291,8 @@ impl MemoryArena {
                 NonNull::new(&mut (*mut_arena_memory)[user_base_alloc_idx] as *mut _ as *mut u8)
             }
         } else {
+            // this "partially allocated" block will remain unusable, since it ends past the arena end
+            // notice that this block's signature is not set to mark as "not available" for iterators
             debug!("attempt to allocate {} bytes: room_left_bytes: {}", size, self.room_left_in_bytes());
             return None;
         }
@@ -296,9 +304,9 @@ impl MemoryArena {
     /// for block in arena.iter_mut::<MyType>() {
     ///       // Do something with the block
     /// }
-    /// 
+    ///
     pub fn iter_mut<'a, T: 'a>(&'a mut self) -> MemoryArenaIteratorMut<'a, T> {
-        MemoryArenaIteratorMut::new(self) 
+        MemoryArenaIteratorMut::new(self)
     }
 }
 
@@ -334,6 +342,7 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
         let (_memory_arena_base_address, index_to_next_free_paragraph) = unsafe {(*control_paragraph).get_paragraph_signature()};
         debug!("MemoryArenaIteratorMut::next: paragraph[{}] _memory_arena_base_address {}, index_to_next_free_paragraph {}", self.current_index, _memory_arena_base_address, index_to_next_free_paragraph);
         if self.current_index >= index_to_next_free_paragraph {
+            // note: if this alloc was result of a race condition, signature was not set and index_to_next_free_paragraph is zero; also returns here
             return None;
         }
 
@@ -344,26 +353,24 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
         }
 
         // Safety: index is always internal to our arena, therefore valid
-        let ptr = self.arena.get_mut_paragraph_at_idx(self.current_index+1);
-        let item = unsafe { &mut *(ptr as *mut u8 as *mut T) };
+        let user_data_ptr = self.arena.get_mut_paragraph_at_idx(self.current_index+1); // +1 to reach the user data block within the allocated block
+        let item = unsafe { &mut *(user_data_ptr as *mut u8 as *mut T) };
 
         self.current_index = index_to_next_free_paragraph;
         Some(item)
     }
 }
 
+// set RUST_LOG=warn & cargo test --release -- --nocapture --test-threads 1
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_enable_env_logger() {
-        init_env_logger(); // enables for all tests that follow; might need to be added if you run a single test as in "cargo test test_name"
-    }
-
     // cargo test --bin rust-paragraph-allocator test_validate_sizes -- --test-threads=1 --nocapture
     #[test]
     fn test_validate_sizes() {
+        init_env_logger();  // honor RUST_LOG environment settting
+
         // Create a thread builder with a stack size that fits our arena
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_validate_sizes".into());
 
@@ -402,6 +409,7 @@ mod tests {
 
     #[test]
     fn test_arena_new() {
+        init_env_logger();  // honor RUST_LOG environment settting
         debug!("test_arena_new: starting");
 
         // Create a thread builder with necesary stack
@@ -437,19 +445,19 @@ mod tests {
         assert!(!ptr.is_null(), "Pointer is null!");
         assert!(size > 0, "Size is zero or negative!");
         debug!("validate_pattern: addr= {:p}, size= {} (0x{:06x})", ptr, size, size);
-    
+
         const PATTERN: [u8; 4] = [0xCA, 0xF0, 0xAD, 0xDE]; // "DEADF0CA" in bytes
-    
+
         // Create a Slice for Reading (Note: *const for immutable access)
         let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
-    
+
         // Iterate and Compare
         for chunk in slice.chunks_exact(PATTERN.len()) {
             if chunk != PATTERN {
                 return false; // Mismatch found
             }
         }
-    
+
         // Handle Remaining Bytes (If Any)
         let remainder = slice.chunks_exact(PATTERN.len()).remainder();
         remainder == &PATTERN[..remainder.len()]
@@ -460,26 +468,27 @@ mod tests {
         // Safety Check: Ensure the pointer is valid and the size is reasonable
         assert!(!ptr.is_null(), "Pointer is null!");
         assert!(size > 0, "Size is zero or negative!");
-    
+
         // Pattern to Fill
         const PATTERN: [u8; 4] = [0xCA, 0xF0, 0xAD, 0xDE]; // "DEADF0CA" in bytes
-    
+
         // Create a Slice for Convenient Writing
         let slice = unsafe { std::slice::from_raw_parts_mut(ptr, size) };
-    
+
         // Efficiently Fill the Slice
         for chunk in slice.chunks_exact_mut(PATTERN.len()) {
             chunk.copy_from_slice(&PATTERN);
         }
-    
+
         // Handle Remaining Bytes (If Any)
         let remainder = slice.chunks_exact_mut(PATTERN.len()).into_remainder();
         remainder.copy_from_slice(&PATTERN[..remainder.len()]);
     }
-    
 
     #[test]
     fn test_single_alloc_and_contains() {
+        init_env_logger();  // honor RUST_LOG environment settting
+
         // Create a thread builder with necesary stack
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_single_alloc_and_contains".into());
 
@@ -513,6 +522,8 @@ mod tests {
     // cargo test --bin rust-paragraph-allocator test_allocate_all_paragraphs -- --test-threads=1 --nocapture
     #[test]
     fn test_allocate_all_paragraphs() {
+        init_env_logger();  // honor RUST_LOG environment settting
+
         // Create a thread builder with necessary stack size
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_allocate_all_paragraphs".into());
 
@@ -526,7 +537,7 @@ mod tests {
             assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, size_of_val(deref_arena));
 
             assert_eq!(PARAGRAPH_SIZE_IN_BYTES, size_of::<u128>());
-            let num_bytes = size_of::<u128>(); 
+            let num_bytes = size_of::<u128>();
             let mut count_allocs = 0;
             while let Some(ptr) = deref_arena.alloc_bytes_zeroed(num_bytes) {
                 count_allocs += 1;
@@ -546,8 +557,10 @@ mod tests {
     }
 
     #[test]
-    //[ignore] // used for test driven development only
+    #[ignore] // used for test driven development only
     fn tdd_paragraph() {
+        init_env_logger();  // honor RUST_LOG environment settting
+
         let mut paragraph = Paragraph::new();
         let mut boxed_paragraph = Box::new(Paragraph::new());
         let mut pinned_boxed_paragraph = Box::pin(Paragraph::new());
@@ -568,8 +581,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // used for test driven development only
     fn tdd_room_left() {
-        // // Create a thread builder with necessary stack size
+        init_env_logger();  // honor RUST_LOG environment settting
+
+        // Create a thread builder with necessary stack size
         let builder = std::thread::Builder::new().stack_size(10 * ONE_MEGABYTE).name("tdd_room_left".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -577,7 +593,7 @@ mod tests {
         let sizeof_paragraph = size_of::<Paragraph>();
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, sizeof_paragraph);
 
-        // // Spawn a new thread using the builder
+        // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
             init_env_logger();
             let mut binding = MemoryArena::new();
@@ -617,16 +633,16 @@ mod tests {
             join_handle.join().unwrap();
         } else {
             error!("test_validate_sizes: Error creating the thread.");
-        }        
+        }
     }
 
     #[test]
     fn test_paragraph_mut_iterator() {
-        init_env_logger();
+        init_env_logger();  // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
         let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_paragraph_mut_iterator".into());
-        
+
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
         let sizeof_paragraph = size_of::<Paragraph>();
@@ -636,7 +652,7 @@ mod tests {
         let handle = builder.spawn(|| {
             let mut binding = MemoryArena::new();
             let memory_arena = binding.deref_mut();
-            
+
             // Allocate some Foo instances on the arena
             let layout = Layout::from_size_align(size_of::<Paragraph>(), size_of::<Paragraph>()).unwrap();
             let mut last_alloc_idx = 0;
@@ -659,7 +675,7 @@ mod tests {
                 }
             }
             info!("able to make {} usable allocations of {} bytes each", last_alloc_idx, size_of::<Paragraph>());
-            
+
             // Create and use the mutable iterator
             let iter = memory_arena.iter_mut::<Paragraph>();
             let mut idx = 0;
@@ -695,12 +711,13 @@ mod tests {
             error!("test_validate_sizes: Error creating the thread.");
         }
 }
-    
+
 }
 
+// honor environment variable RUST_LOG=[trace|debug|info|warn|error] setting - remember to run "cargo test -- --nocapture" to see the logs
 fn init_env_logger() {
     if !(log_enabled!(Level::Error)|log_enabled!(Level::Warn)|log_enabled!(Level::Info)|log_enabled!(Level::Trace)) {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).try_init();
     }
 
     #[cfg(debug_assertions)]
@@ -736,7 +753,7 @@ fn init_env_logger() {
 
     assert_eq!(sizeof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
     assert!(sizeof_allocation_arena < MEMORY_ARENA_SIZE_IN_BYTES);
-    
+
     #[cfg(not(debug_assertions))]
     assert_eq!(alignof_memory_arena, core::cmp::min(1_048_576, MEMORY_ARENA_SIZE_IN_BYTES)); // RELEASE alignment is 1 Mib
     #[cfg(debug_assertions)]
