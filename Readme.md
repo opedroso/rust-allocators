@@ -42,10 +42,11 @@ let my_class_instance_in_the_heap = Box<MyClass>::new( MyClass { 2i64 } );
 **Key Concept** from Rust point of view, both `my_class_instance_on_stack` and `my_class_instance_in_the_heap` are references to memory addresses.  
 The address of the first happens to be in the stack region, the address of the second, happens to be within the memory pages allocated for the heap.
 The only other difference is that both of these expressions are valid:
+
 ```rust
   assert_eq!(my_class_instance_on_stack.member_data, 1i64);
   assert_eq!(my_class_instance_in_the_heap.member_data, 2i64);
-´´´
+```
 
 ## Rust Memory Allocators
 
