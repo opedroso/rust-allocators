@@ -1,4 +1,4 @@
-use std::alloc::{GlobalAlloc, System, Layout};
+use std::alloc::{GlobalAlloc, Layout, System};
 
 struct MyAllocator;
 

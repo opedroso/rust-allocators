@@ -1,18 +1,17 @@
 #![allow(dead_code)]
 
+use crate::definitions::*;
+use crossbeam::atomic::*;
+use log::*;
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
-use crossbeam::atomic::*;
-use std::ptr::NonNull;
-use std::ops::{BitOr, BitAnd};
-use std::default::Default;
-use std::pin::Pin;
 use std::cmp::max;
-use log::*;
+use std::default::Default;
+use std::mem::{align_of, offset_of, size_of, size_of_val};
 use std::ops::*;
-use std::mem::{size_of, size_of_val, align_of, offset_of};
-use crate::definitions::*;
-
+use std::ops::{BitAnd, BitOr};
+use std::pin::Pin;
+use std::ptr::NonNull;
 
 /// MemoryArena manages allocations within its static memory array
 /// It is meant to be written once by possibly multi-threaded user block producers
@@ -57,21 +56,20 @@ bits_in_arena_alloc	alignment	count_paragraphs	bits_in_paragraph_idx	IDX_MASK
 23	8388608	524288	19	7FFFF
 24	16777216	1048576	20	FFFFF
 */
-
 // global constants
-#[cfg(not(debug_assertions))]   // as set in Cargo.toml
-pub mod definitions
-{
+#[cfg(not(debug_assertions))] // as set in Cargo.toml
+pub mod definitions {
     pub const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
     pub const MEMORY_ARENA_SIZE_IN_BYTES: usize = 16 * ONE_MEGABYTE; // must be multiple of 1 MiB, but no more than 16 MB total (limit is number of bits in paragraph.next_free_idx)
-    pub const SIGNATURE_MASK: u64 = !((MEMORY_ARENA_SIZE_IN_BYTES-1) as u64); // must fit significant (that is non-zero) base address in the signature bits
+    pub const SIGNATURE_MASK: u64 = !((MEMORY_ARENA_SIZE_IN_BYTES - 1) as u64); // must fit significant (that is non-zero) base address in the signature bits
     pub const PARAGRAPH_IDX_MASK: u64 = !(SIGNATURE_MASK); // the lower bits of signature will have the index of the next (free or alloc'ed) paragraph
     pub const PARAGRAPH_SIZE_IN_BYTES: usize = 16; // a paragraph is a 16 bytes chunk of memory; in our case which has an address that is on a 16 byte boundary
-    pub const MEMORY_ARENA_SIZE_IN_PARAGRAPHS: usize = MEMORY_ARENA_SIZE_IN_BYTES/PARAGRAPH_SIZE_IN_BYTES; // size of memory arena in paragraphs
+    pub const MEMORY_ARENA_SIZE_IN_PARAGRAPHS: usize =
+        MEMORY_ARENA_SIZE_IN_BYTES / PARAGRAPH_SIZE_IN_BYTES; // size of memory arena in paragraphs
     pub const COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA: usize = MEMORY_ARENA_SIZE_IN_PARAGRAPHS - 2; // paragraphs available for allocation 0..COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
 
-    use std::cell::UnsafeCell;
     use crossbeam::atomic::*;
+    use std::cell::UnsafeCell;
 
     #[repr(align(1_048_576))] // ONE_MEGABYTE boundary
     #[derive(Debug)]
@@ -81,32 +79,32 @@ pub mod definitions
         pub(crate) memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>, // indices 0..65_533 // memory must be first memory address within MemoryArena
         // paragraph[65534] // = 1 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
         pub(crate) _available: u64, // contents not yet used, but must be first variable past memory (or update function contains)
-        pub(crate) next_available_paragraph_idx: AtomicCell::<usize>, // value must be less than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA; index into memory array that is free for next allocation
+        pub(crate) next_available_paragraph_idx: AtomicCell<usize>, // value must be less than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA; index into memory array that is free for next allocation
         // paragraph[65535] // = 2 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA - last 16 bytes in 1 MB block
-        pub(crate) future_next_arena_base_addr: AtomicCell::<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
+        pub(crate) future_next_arena_base_addr: AtomicCell<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
         pub(crate) signature: u64, // ((the base address of the arena)>>20)
     }
     #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, Default)]
     pub(crate) struct Paragraph {
         pub(crate) paragraph_signature: u64, // ((the base address of the arena)>>20)<<20) & next_[free/allocated]_paragraph_idx
-        pub(crate) _available: u64, // not yet used
+        pub(crate) _available: u64,          // not yet used
     }
 }
 
 #[cfg(debug_assertions)]
-pub mod definitions
-{
+pub mod definitions {
     pub const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
     pub const MEMORY_ARENA_SIZE_IN_BYTES: usize = 4_096; // must be less than 1 MiB for using debugger in the IDE since default stack is 1 Mib
-    pub const SIGNATURE_MASK: u64 = !((MEMORY_ARENA_SIZE_IN_BYTES-1) as u64); // must fit significant (that is non-zero) base address in the signature bits
+    pub const SIGNATURE_MASK: u64 = !((MEMORY_ARENA_SIZE_IN_BYTES - 1) as u64); // must fit significant (that is non-zero) base address in the signature bits
     pub const PARAGRAPH_IDX_MASK: u64 = !(SIGNATURE_MASK); // the lower bits of signature will have the index of the next (free or alloc'ed) paragraph
     pub const PARAGRAPH_SIZE_IN_BYTES: usize = 16; // a paragraph is a 16 bytes chunk of memory; in our case which has an address that is on a 16 byte boundary
-    pub const MEMORY_ARENA_SIZE_IN_PARAGRAPHS: usize = MEMORY_ARENA_SIZE_IN_BYTES/PARAGRAPH_SIZE_IN_BYTES; // size of memory arena in paragraphs
+    pub const MEMORY_ARENA_SIZE_IN_PARAGRAPHS: usize =
+        MEMORY_ARENA_SIZE_IN_BYTES / PARAGRAPH_SIZE_IN_BYTES; // size of memory arena in paragraphs
     pub const COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA: usize = MEMORY_ARENA_SIZE_IN_PARAGRAPHS - 2; // paragraphs available for allocation 0..COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
 
-    use std::cell::UnsafeCell;
     use crossbeam::atomic::*;
+    use std::cell::UnsafeCell;
 
     #[repr(align(4_096))] // must be literal value of MEMORY_ARENA_SIZE_IN_BYTES
     #[derive(Debug)]
@@ -116,20 +114,20 @@ pub mod definitions
         pub(crate) memory: UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>, // indices 0..65_533 // memory must be first used address within MemoryArena
         // paragraph[65534] // = 1 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
         pub(crate) _available: u64, // contents not yet used, but must be first variable past memory (or change the function contains() accordingly)
-        pub(crate) next_available_paragraph_idx: AtomicCell::<usize>, // value must be less than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA; index into memory array that is free for next allocation
+        pub(crate) next_available_paragraph_idx: AtomicCell<usize>, // value must be less than COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA; index into memory array that is free for next allocation
         // paragraph[65535] // = 2 + COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA - last 16 bytes in 1 MB block
-        pub(crate) future_next_arena_base_addr: AtomicCell::<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
+        pub(crate) future_next_arena_base_addr: AtomicCell<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
         pub(crate) signature: u64, // ((the base address of the arena)>>20)
-        // Note: next_available_paragraph_idx and future_next_arena_base_addr *must not* be in same paragraph due to intrinsic locking used to access them
+                                   // Note: next_available_paragraph_idx and future_next_arena_base_addr *must not* be in same paragraph due to intrinsic locking used to access them
     }
     #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
     #[derive(Copy, Clone, Debug)]
-    pub(crate) struct Paragraph {
+    #[derive(Default)]
+pub(crate) struct Paragraph {
         pub(crate) paragraph_signature: u64, // ((the base address of the arena)>>20)<<20) & next_[free/allocated]_paragraph_idx
-        pub(crate) _available: u64, // not yet used
+        pub(crate) _available: u64,          // not yet used
     }
 }
-
 
 // Paragraph represents a 16 byte chunk of memory
 // there will be one header/control paragraph before every arena allocation to indicate where the allocation ends and next allocation begins
@@ -153,24 +151,16 @@ impl Paragraph {
     // returns tuple (memory_arena_base_address, index_to_next_free_paragraph) when paragraph is first allocated
     // after the next free paragraph is allocated, it becomes a paragraph_index_of_next_allocated_paragraph
     pub fn get_paragraph_signature(&self) -> (u64, usize) {
-        let (memory_arena_base_address, index_to_next_free_paragraph) =
-                    (self.paragraph_signature & SIGNATURE_MASK, (self.paragraph_signature & PARAGRAPH_IDX_MASK) as usize);
+        let (memory_arena_base_address, index_to_next_free_paragraph) = (
+            self.paragraph_signature & SIGNATURE_MASK,
+            (self.paragraph_signature & PARAGRAPH_IDX_MASK) as usize,
+        );
         debug!("get paragraph.signature: (memory_arena_base_address: 0x{:x} ({}), index_to_next_free_paragraph: (0x{:x}) {})",
                     memory_arena_base_address, memory_arena_base_address, index_to_next_free_paragraph, index_to_next_free_paragraph);
         (memory_arena_base_address, index_to_next_free_paragraph)
     }
 }
 
-impl Default for Paragraph {
-
-    fn default() -> Self {
-        // Initialize the fields with appropriate default values
-        Paragraph {
-            paragraph_signature: 0,
-            _available: 0,
-        }
-    }
-}
 
 impl From<*mut Paragraph> for Paragraph {
     fn from(raw_ptr: *mut Paragraph) -> Self {
@@ -183,18 +173,18 @@ impl From<*mut Paragraph> for Paragraph {
     }
 }
 
-
 impl MemoryArena {
-
     fn new() -> Pin<Box<MemoryArena>> {
         // even though the newly created MemoryArena will be instantiated on the heap (that is why we use Box::pin() to create it)
         // the compiler will require a temporary array on the stack size_of([Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA])
         // in RELEASE builds, this is 32 bytes shy of 16 Mib, so the stack of the calling thread needs to be larger than 16 MiB for this code to succeed
         let mut pinned_boxed_arena = Box::pin(MemoryArena {
-            memory: UnsafeCell::new([Paragraph  {
-                paragraph_signature: 0, // Base address is initially 0
-                _available: 0,
-            }; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]),
+            memory: UnsafeCell::new(
+                [Paragraph {
+                    paragraph_signature: 0, // Base address is initially 0
+                    _available: 0,
+                }; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA],
+            ),
             _available: 0,
             next_available_paragraph_idx: AtomicCell::<usize>::new(0),
             future_next_arena_base_addr: AtomicCell::<u64>::new(0),
@@ -202,19 +192,28 @@ impl MemoryArena {
         });
         let arena = pinned_boxed_arena.deref_mut();
         arena.set_signature();
-        debug!("new: Pin<Box<MemoryArena>>: {:p}, size: {}, arena signature: 0x{:016x}", arena, size_of_val(arena), arena.get_signature());
+        debug!(
+            "new: Pin<Box<MemoryArena>>: {:p}, size: {}, arena signature: 0x{:016x}",
+            arena,
+            size_of_val(arena),
+            arena.get_signature()
+        );
         debug!("MemoryArena::new() returning");
         pinned_boxed_arena
     }
 
-    fn get_mut_paragraph_at_idx(&self , paragraph_idx: usize) -> *mut Paragraph {
+    fn get_mut_paragraph_at_idx(&self, paragraph_idx: usize) -> *mut Paragraph {
         unsafe {
             let mut_arena_memory = self.memory.get();
             &mut (*mut_arena_memory)[paragraph_idx] as *mut Paragraph
         }
     }
 
-    fn set_signature_for_paragraph_at_idx(&self, next_free_paragraph_idx: usize, paragraph_idx: usize) {
+    fn set_signature_for_paragraph_at_idx(
+        &self,
+        next_free_paragraph_idx: usize,
+        paragraph_idx: usize,
+    ) {
         unsafe {
             let paragraph = self.get_mut_paragraph_at_idx(paragraph_idx);
             (*paragraph).set_paragraph_signature(next_free_paragraph_idx);
@@ -229,9 +228,14 @@ impl MemoryArena {
     }
 
     fn set_signature(&mut self) {
-        let signature = (self as *const _ as u64 ).bitand(SIGNATURE_MASK); // equivalent to (&arena as *const _) & 0xFFFFFFFFFFF00000
+        let signature = (self as *const _ as u64).bitand(SIGNATURE_MASK); // equivalent to (&arena as *const _) & 0xFFFFFFFFFFF00000
         self.signature = signature;
-        debug!("set_signature: arena address: {:p}, size: {}, arena signature: 0x{:016x}", self, size_of_val(self), self.signature);
+        debug!(
+            "set_signature: arena address: {:p}, size: {}, arena signature: 0x{:016x}",
+            self,
+            size_of_val(self),
+            self.signature
+        );
     }
     fn get_signature(&self) -> u64 {
         self.signature
@@ -269,9 +273,15 @@ impl MemoryArena {
         let size = layout.size();
         let room_left_bytes = self.room_left_in_bytes();
         if size == 0 || layout.align() > 16 || size > room_left_bytes {
-            if layout.size() == 0 { warn!("zero byte allocation requested but not fullfiled"); } // turned off because it is too noisy
-            if layout.align() > size_of::<Paragraph>() { panic!("alignment > 16 not yet supported"); };
-            if size > room_left_bytes && room_left_bytes > 0 { warn!("largest user block possible is {} bytes", room_left_bytes); }
+            if layout.size() == 0 {
+                warn!("zero byte allocation requested but not fullfiled");
+            } // turned off because it is too noisy
+            if layout.align() > size_of::<Paragraph>() {
+                panic!("alignment > 16 not yet supported");
+            };
+            if size > room_left_bytes && room_left_bytes > 0 {
+                warn!("largest user block possible is {} bytes", room_left_bytes);
+            }
             return None;
         }
         let num_paragraphs = 1 + max(size / size_of::<Paragraph>(), 1); // header + user_block
@@ -282,7 +292,10 @@ impl MemoryArena {
         // verify there was not a race condition and we ended up with an allocation past the end of the arena
         let user_base_alloc_idx = base_alloc_idx + 1;
         let next_available_paragraph_idx = base_alloc_idx + num_paragraphs;
-        debug!("base_alloc_idx= {}, next available paragraph idx= {}", base_alloc_idx, next_available_paragraph_idx);
+        debug!(
+            "base_alloc_idx= {}, next available paragraph idx= {}",
+            base_alloc_idx, next_available_paragraph_idx
+        );
         if next_available_paragraph_idx <= COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA {
             self.set_signature_for_paragraph_at_idx(next_available_paragraph_idx, base_alloc_idx);
             unsafe {
@@ -293,8 +306,12 @@ impl MemoryArena {
         } else {
             // this "partially allocated" block will remain unusable, since it ends past the arena end
             // notice that this block's signature is not set to mark as "not available" for iterators
-            debug!("attempt to allocate {} bytes: room_left_bytes: {}", size, self.room_left_in_bytes());
-            return None;
+            debug!(
+                "attempt to allocate {} bytes: room_left_bytes: {}",
+                size,
+                self.room_left_in_bytes()
+            );
+            None
         }
     }
 
@@ -339,7 +356,8 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
 
         // Check if there is one more item in the list of allocated items
         let control_paragraph = self.arena.get_mut_paragraph_at_idx(self.current_index);
-        let (_memory_arena_base_address, index_to_next_free_paragraph) = unsafe {(*control_paragraph).get_paragraph_signature()};
+        let (_memory_arena_base_address, index_to_next_free_paragraph) =
+            unsafe { (*control_paragraph).get_paragraph_signature() };
         debug!("MemoryArenaIteratorMut::next: paragraph[{}] _memory_arena_base_address {}, index_to_next_free_paragraph {}", self.current_index, _memory_arena_base_address, index_to_next_free_paragraph);
         if self.current_index >= index_to_next_free_paragraph {
             // note: if this alloc was result of a race condition, signature was not set and index_to_next_free_paragraph is zero; also returns here
@@ -347,13 +365,14 @@ impl<'a, T: 'a> Iterator for MemoryArenaIteratorMut<'a, T> {
         }
 
         // Safety: validate type being iterated fits in allocated block
-        let user_block_size = (index_to_next_free_paragraph - self.current_index) * PARAGRAPH_SIZE_IN_BYTES;
+        let user_block_size =
+            (index_to_next_free_paragraph - self.current_index) * PARAGRAPH_SIZE_IN_BYTES;
         if user_block_size < std::mem::size_of::<Self::Item>() {
             panic!("allocated user block must fit the enumerated type T");
         }
 
         // Safety: index is always internal to our arena, therefore valid
-        let user_data_ptr = self.arena.get_mut_paragraph_at_idx(self.current_index+1); // +1 to reach the user data block within the allocated block
+        let user_data_ptr = self.arena.get_mut_paragraph_at_idx(self.current_index + 1); // +1 to reach the user data block within the allocated block
         let item = unsafe { &mut *(user_data_ptr as *mut u8 as *mut T) };
 
         self.current_index = index_to_next_free_paragraph;
@@ -369,10 +388,12 @@ mod tests {
     // cargo test --bin rust-paragraph-allocator test_validate_sizes -- --test-threads=1 --nocapture
     #[test]
     fn test_validate_sizes() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with a stack size that fits our arena
-        let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_validate_sizes".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .name("test_validate_sizes".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
@@ -409,11 +430,13 @@ mod tests {
 
     #[test]
     fn test_arena_new() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
         debug!("test_arena_new: starting");
 
         // Create a thread builder with necesary stack
-        let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_arena_new".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .name("test_arena_new".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena);
@@ -444,7 +467,10 @@ mod tests {
         // Safety Check
         assert!(!ptr.is_null(), "Pointer is null!");
         assert!(size > 0, "Size is zero or negative!");
-        debug!("validate_pattern: addr= {:p}, size= {} (0x{:06x})", ptr, size, size);
+        debug!(
+            "validate_pattern: addr= {:p}, size= {} (0x{:06x})",
+            ptr, size, size
+        );
 
         const PATTERN: [u8; 4] = [0xCA, 0xF0, 0xAD, 0xDE]; // "DEADF0CA" in bytes
 
@@ -487,10 +513,12 @@ mod tests {
 
     #[test]
     fn test_single_alloc_and_contains() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necesary stack
-        let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_single_alloc_and_contains".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .name("test_single_alloc_and_contains".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
@@ -522,10 +550,12 @@ mod tests {
     // cargo test --bin rust-paragraph-allocator test_allocate_all_paragraphs -- --test-threads=1 --nocapture
     #[test]
     fn test_allocate_all_paragraphs() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
-        let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_allocate_all_paragraphs".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .name("test_allocate_all_paragraphs".into());
 
         // Spawn a new thread using the builder
         let handle = builder.spawn(|| {
@@ -559,7 +589,7 @@ mod tests {
     #[test]
     #[ignore] // used for test driven development only
     fn tdd_paragraph() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         let mut paragraph = Paragraph::new();
         let mut boxed_paragraph = Box::new(Paragraph::new());
@@ -568,13 +598,31 @@ mod tests {
         boxed_paragraph.set_paragraph_signature(0x222);
         pinned_boxed_paragraph.set_paragraph_signature(0x444);
         let (base_addr, next_free_idx) = paragraph.get_paragraph_signature();
-        debug!("main: paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", &paragraph, size_of_val(&paragraph), base_addr, next_free_idx);
+        debug!(
+            "main: paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})",
+            &paragraph,
+            size_of_val(&paragraph),
+            base_addr,
+            next_free_idx
+        );
         let (base_addr, next_free_idx) = boxed_paragraph.get_paragraph_signature();
         let unboxed_paragraph = boxed_paragraph.deref();
-        debug!("main: boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unboxed_paragraph, size_of_val(unboxed_paragraph), base_addr, next_free_idx);
+        debug!(
+            "main: boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})",
+            unboxed_paragraph,
+            size_of_val(unboxed_paragraph),
+            base_addr,
+            next_free_idx
+        );
         let (base_addr, next_free_idx) = pinned_boxed_paragraph.get_paragraph_signature();
         let unpined_unboxed_paragraph = pinned_boxed_paragraph.deref();
-        debug!("main: pinned_boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})", unpined_unboxed_paragraph, size_of_val(unpined_unboxed_paragraph), base_addr, next_free_idx);
+        debug!(
+            "main: pinned_boxed_paragraph address({:p}), size({}), signature(0x{:x}), 0x{:x})",
+            unpined_unboxed_paragraph,
+            size_of_val(unpined_unboxed_paragraph),
+            base_addr,
+            next_free_idx
+        );
         assert_eq!(paragraph.get_paragraph_signature().1, 0x111);
         assert_eq!(boxed_paragraph.get_paragraph_signature().1, 0x222);
         assert_eq!(pinned_boxed_paragraph.get_paragraph_signature().1, 0x444);
@@ -583,10 +631,12 @@ mod tests {
     #[test]
     #[ignore] // used for test driven development only
     fn tdd_room_left() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
-        let builder = std::thread::Builder::new().stack_size(10 * ONE_MEGABYTE).name("tdd_room_left".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * ONE_MEGABYTE)
+            .name("tdd_room_left".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
@@ -638,10 +688,12 @@ mod tests {
 
     #[test]
     fn test_paragraph_mut_iterator() {
-        init_env_logger();  // honor RUST_LOG environment settting
+        init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
-        let builder = std::thread::Builder::new().stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES).name("test_paragraph_mut_iterator".into());
+        let builder = std::thread::Builder::new()
+            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .name("test_paragraph_mut_iterator".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
         assert_eq!(MEMORY_ARENA_SIZE_IN_BYTES, sizeof_memory_arena, "make sure you changed the alignment if you changed the arena size; requires source edit");
@@ -654,34 +706,52 @@ mod tests {
             let memory_arena = binding.deref_mut();
 
             // Allocate some Foo instances on the arena
-            let layout = Layout::from_size_align(size_of::<Paragraph>(), size_of::<Paragraph>()).unwrap();
+            let layout =
+                Layout::from_size_align(size_of::<Paragraph>(), size_of::<Paragraph>()).unwrap();
             let mut last_alloc_idx = 0;
             for idx in 0..2_000_000 {
                 let num_bytes_requested = idx % PARAGRAPH_SIZE_IN_BYTES;
                 if let Some(ptr) = memory_arena.alloc_bytes_zeroed(num_bytes_requested) {
-                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_bytes_zeroed()", last_alloc_idx, ptr);
+                    debug!(
+                        "ptr[{}] = {:p} returned by MemoryArena::alloc_bytes_zeroed()",
+                        last_alloc_idx, ptr
+                    );
                     fill_in_allocation(ptr.as_ptr(), size_of::<Paragraph>()); // overwrite every byte of allocation with pattern 0xDEADF0CA
-                    last_alloc_idx = last_alloc_idx+1;
-                    assert!(validate_pattern(ptr.as_ptr(), size_of::<Paragraph>())); // validate overwrite stuck
+                    last_alloc_idx = last_alloc_idx + 1;
+                    assert!(validate_pattern(ptr.as_ptr(), size_of::<Paragraph>()));
+                    // validate overwrite stuck
                 }
                 if let Some(ptr) = memory_arena.alloc_zeroed(layout) {
-                    debug!("ptr[{}] = {:p} returned by MemoryArena::alloc_zeroed()", last_alloc_idx, ptr);
+                    debug!(
+                        "ptr[{}] = {:p} returned by MemoryArena::alloc_zeroed()",
+                        last_alloc_idx, ptr
+                    );
                     fill_in_allocation(ptr.as_ptr(), layout.size()); // overwrite every byte of allocation with pattern 0xDEADF0CA
-                    last_alloc_idx = last_alloc_idx+1;
+                    last_alloc_idx = last_alloc_idx + 1;
                     assert!(validate_pattern(ptr.as_ptr(), layout.size())); // validate overwrite stuck
                 }
                 if memory_arena.room_left_in_bytes() < PARAGRAPH_SIZE_IN_BYTES {
                     break;
                 }
             }
-            info!("able to make {} usable allocations of {} bytes each", last_alloc_idx, size_of::<Paragraph>());
+            info!(
+                "able to make {} usable allocations of {} bytes each",
+                last_alloc_idx,
+                size_of::<Paragraph>()
+            );
 
             // Create and use the mutable iterator
             let iter = memory_arena.iter_mut::<Paragraph>();
             let mut idx = 0;
             for foo in iter {
-                debug!("foo._available= {} 0x{:016x}", foo._available, foo._available);
-                debug!("foo.paragraph_signature= 0x{:016x}", foo.paragraph_signature);
+                debug!(
+                    "foo._available= {} 0x{:016x}",
+                    foo._available, foo._available
+                );
+                debug!(
+                    "foo.paragraph_signature= 0x{:016x}",
+                    foo.paragraph_signature
+                );
                 // assert!(validate_pattern(&foo as *const _ as *const u8, size_of::<Paragraph>())); // validate overwrite stuck
                 // Do something with the &mut Foo reference (e.g., modify its fields)
                 foo._available = idx;
@@ -689,7 +759,11 @@ mod tests {
                 idx = idx + 1;
             }
             assert_eq!(idx, last_alloc_idx); // verify expected number of items was iterated over
-            info!("able to iterate {} usable allocations of {} bytes each", idx, size_of::<Paragraph>());
+            info!(
+                "able to iterate {} usable allocations of {} bytes each",
+                idx,
+                size_of::<Paragraph>()
+            );
             let iter2 = memory_arena.iter_mut::<Paragraph>();
             let mut idx2 = 0;
             for foo in iter2 {
@@ -701,7 +775,11 @@ mod tests {
             }
             assert_eq!(idx2, last_alloc_idx); // verify expected number of items was iterated over
             assert_eq!(idx2, idx); // verify two iterators gave same results over multiple iterations
-            info!("able to iterate {} usable allocations of {} bytes each", idx2, size_of::<Paragraph>());
+            info!(
+                "able to iterate {} usable allocations of {} bytes each",
+                idx2,
+                size_of::<Paragraph>()
+            );
         });
 
         // Wait for the spawned thread to finish
@@ -710,14 +788,19 @@ mod tests {
         } else {
             error!("test_validate_sizes: Error creating the thread.");
         }
-}
-
+    }
 }
 
 // honor environment variable RUST_LOG=[trace|debug|info|warn|error] setting - remember to run "cargo test -- --nocapture" to see the logs
 fn init_env_logger() {
-    if !(log_enabled!(Level::Error)|log_enabled!(Level::Warn)|log_enabled!(Level::Info)|log_enabled!(Level::Trace)) {
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).try_init();
+    if !(log_enabled!(Level::Error)
+        | log_enabled!(Level::Warn)
+        | log_enabled!(Level::Info)
+        | log_enabled!(Level::Trace))
+    {
+        let _ =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
+                .try_init();
     }
 
     #[cfg(debug_assertions)]
@@ -725,40 +808,102 @@ fn init_env_logger() {
     #[cfg(not(debug_assertions))]
     info!("RELEASE Target");
 
-    info!("ONE_MEGABYTE                           : 0x{:016x} ({})", ONE_MEGABYTE, ONE_MEGABYTE);
-    info!("MEMORY_ARENA_SIZE_IN_BYTES             : 0x{:016x} ({})", MEMORY_ARENA_SIZE_IN_BYTES, MEMORY_ARENA_SIZE_IN_BYTES);
-    info!("PARAGRAPH_SIZE_IN_BYTES                : 0x{:016x} ({})", PARAGRAPH_SIZE_IN_BYTES, PARAGRAPH_SIZE_IN_BYTES);
-    info!("MEMORY_ARENA_SIZE_IN_PARAGRAPHS        : 0x{:016x} ({})", MEMORY_ARENA_SIZE_IN_PARAGRAPHS, MEMORY_ARENA_SIZE_IN_PARAGRAPHS);
-    info!("COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA   : 0x{:016x} ({})", COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA, COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA);
-    info!("SIGNATURE_MASK                         : 0x{:016x}", SIGNATURE_MASK);
-    info!("PARAGRAPH_IDX_MASK                     : 0x{:016x}", PARAGRAPH_IDX_MASK);
+    info!(
+        "ONE_MEGABYTE                           : 0x{:016x} ({})",
+        ONE_MEGABYTE, ONE_MEGABYTE
+    );
+    info!(
+        "MEMORY_ARENA_SIZE_IN_BYTES             : 0x{:016x} ({})",
+        MEMORY_ARENA_SIZE_IN_BYTES, MEMORY_ARENA_SIZE_IN_BYTES
+    );
+    info!(
+        "PARAGRAPH_SIZE_IN_BYTES                : 0x{:016x} ({})",
+        PARAGRAPH_SIZE_IN_BYTES, PARAGRAPH_SIZE_IN_BYTES
+    );
+    info!(
+        "MEMORY_ARENA_SIZE_IN_PARAGRAPHS        : 0x{:016x} ({})",
+        MEMORY_ARENA_SIZE_IN_PARAGRAPHS, MEMORY_ARENA_SIZE_IN_PARAGRAPHS
+    );
+    info!(
+        "COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA   : 0x{:016x} ({})",
+        COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA, COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA
+    );
+    info!(
+        "SIGNATURE_MASK                         : 0x{:016x}",
+        SIGNATURE_MASK
+    );
+    info!(
+        "PARAGRAPH_IDX_MASK                     : 0x{:016x}",
+        PARAGRAPH_IDX_MASK
+    );
 
     let alignof_memory_arena = align_of::<MemoryArena>();
-    debug!("align_of(MemoryArena)                  : 0x{:016x} ({})", alignof_memory_arena, alignof_memory_arena);
+    debug!(
+        "align_of(MemoryArena)                  : 0x{:016x} ({})",
+        alignof_memory_arena, alignof_memory_arena
+    );
 
     let sizeof_memory_arena = size_of::<MemoryArena>();
-    debug!("size_of(MemoryArena)                   : 0x{:016x} ({})", sizeof_memory_arena, sizeof_memory_arena);
+    debug!(
+        "size_of(MemoryArena)                   : 0x{:016x} ({})",
+        sizeof_memory_arena, sizeof_memory_arena
+    );
 
-    let sizeof_allocation_arena = size_of::<UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>>();
-    debug!("size_of(MemoryArena.memory)            : 0x{:016x} ({}))", sizeof_allocation_arena, sizeof_allocation_arena);
+    let sizeof_allocation_arena =
+        size_of::<UnsafeCell<[Paragraph; COUNT_PARAGRAPHS_IN_ALLOCATION_ARENA]>>();
+    debug!(
+        "size_of(MemoryArena.memory)            : 0x{:016x} ({}))",
+        sizeof_allocation_arena, sizeof_allocation_arena
+    );
 
     debug!("Memory_Arena member variables layout                :");
-    debug!("Offset,size of field 'memory'                       : {}, {}", offset_of!(MemoryArena, memory), sizeof_allocation_arena);
-    debug!("Offset,size of field '_available'                   : {}, {}", offset_of!(MemoryArena, _available), size_of::<u64>());
-    debug!("Offset,size of field 'next_available_paragraph_idx' : {}, {}", offset_of!(MemoryArena, next_available_paragraph_idx), size_of::<AtomicCell::<usize>>());
-    debug!("Offset,size of field 'future_next_arena_base_addr'  : {}, {}", offset_of!(MemoryArena, future_next_arena_base_addr), size_of::<AtomicCell::<usize>>());
-    debug!("Offset,size of field 'signature'                    : {}, {}", offset_of!(MemoryArena, signature), size_of::<u64>());
+    debug!(
+        "Offset,size of field 'memory'                       : {}, {}",
+        offset_of!(MemoryArena, memory),
+        sizeof_allocation_arena
+    );
+    debug!(
+        "Offset,size of field '_available'                   : {}, {}",
+        offset_of!(MemoryArena, _available),
+        size_of::<u64>()
+    );
+    debug!(
+        "Offset,size of field 'next_available_paragraph_idx' : {}, {}",
+        offset_of!(MemoryArena, next_available_paragraph_idx),
+        size_of::<AtomicCell::<usize>>()
+    );
+    debug!(
+        "Offset,size of field 'future_next_arena_base_addr'  : {}, {}",
+        offset_of!(MemoryArena, future_next_arena_base_addr),
+        size_of::<AtomicCell::<usize>>()
+    );
+    debug!(
+        "Offset,size of field 'signature'                    : {}, {}",
+        offset_of!(MemoryArena, signature),
+        size_of::<u64>()
+    );
     let offset_to_end = offset_of!(MemoryArena, signature) + size_of::<u64>();
-    debug!("Offset past end of Memory_Arena                     : {}", offset_to_end);
+    debug!(
+        "Offset past end of Memory_Arena                     : {}",
+        offset_to_end
+    );
 
-    assert_eq!(sizeof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
+    assert_eq!(
+        sizeof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES,
+        "make sure you changed the alignment if you changed the arena size; requires source edit"
+    );
     assert!(sizeof_allocation_arena < MEMORY_ARENA_SIZE_IN_BYTES);
 
     #[cfg(not(debug_assertions))]
-    assert_eq!(alignof_memory_arena, core::cmp::min(1_048_576, MEMORY_ARENA_SIZE_IN_BYTES)); // RELEASE alignment is 1 Mib
+    assert_eq!(
+        alignof_memory_arena,
+        core::cmp::min(1_048_576, MEMORY_ARENA_SIZE_IN_BYTES)
+    ); // RELEASE alignment is 1 Mib
     #[cfg(debug_assertions)]
-    assert_eq!(alignof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES, "make sure you changed the alignment if you changed the arena size; requires source edit");
-
+    assert_eq!(
+        alignof_memory_arena, MEMORY_ARENA_SIZE_IN_BYTES,
+        "make sure you changed the alignment if you changed the arena size; requires source edit"
+    );
 }
 
 fn main() {
