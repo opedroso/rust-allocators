@@ -56,7 +56,8 @@ bits_in_arena_alloc	alignment	count_paragraphs	bits_in_paragraph_idx	IDX_MASK
 23	8388608	524288	19	7FFFF
 24	16777216	1048576	20	FFFFF
 */
-// global constants
+
+// global constants - RELEASE
 #[cfg(not(debug_assertions))] // as set in Cargo.toml
 pub mod definitions {
     pub const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
@@ -71,7 +72,7 @@ pub mod definitions {
     use crossbeam::atomic::*;
     use std::cell::UnsafeCell;
 
-    #[repr(align(C,1_048_576))] // ONE_MEGABYTE boundary
+    #[repr(C,align(1_048_576))] // ONE_MEGABYTE boundary
     #[derive(Debug)]
     pub(crate) struct MemoryArena {
         // 1 MB = Paragraph[65_536]
@@ -92,6 +93,7 @@ pub mod definitions {
     }
 }
 
+// global constants - DEBUG
 #[cfg(debug_assertions)]
 pub mod definitions {
     pub const ONE_MEGABYTE: usize = 1_048_576; // number of bytes in 1 MiB (2^20)
@@ -274,8 +276,10 @@ impl MemoryArena {
         let room_left_bytes = self.room_left_in_bytes();
         if size == 0 || layout.align() > 16 || size > room_left_bytes {
             if layout.size() == 0 {
+                // turned off in RELEASE because it is too noisy
+                #[cfg(debug_assertions)]
                 warn!("zero byte allocation requested but not fullfiled");
-            } // turned off because it is too noisy
+            }
             if layout.align() > size_of::<Paragraph>() {
                 panic!("alignment > 16 not yet supported");
             };
@@ -391,8 +395,9 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with a stack size that fits our arena
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .stack_size(stack_size_in_bytes)
             .name("test_validate_sizes".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -400,7 +405,7 @@ mod tests {
         let sizeof_paragraph = size_of::<Paragraph>();
         assert_eq!(PARAGRAPH_SIZE_IN_BYTES, sizeof_paragraph);
 
-        // Spawn a new thread using the builder
+        // Spawn a new thread using the builder to create the arena
         let handle = builder.spawn(|| {
             // This closure runs in the new thread with the large stack
             let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -433,9 +438,10 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
         debug!("test_arena_new: starting");
 
-        // Create a thread builder with necesary stack
+        // Create a thread builder with necessary stack
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .stack_size(stack_size_in_bytes)
             .name("test_arena_new".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -516,8 +522,9 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necesary stack
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .stack_size(stack_size_in_bytes)
             .name("test_single_alloc_and_contains".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -553,8 +560,9 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .stack_size(stack_size_in_bytes)
             .name("test_allocate_all_paragraphs".into());
 
         // Spawn a new thread using the builder
@@ -634,8 +642,9 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * ONE_MEGABYTE)
+            .stack_size(stack_size_in_bytes)
             .name("tdd_room_left".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
@@ -691,8 +700,9 @@ mod tests {
         init_env_logger(); // honor RUST_LOG environment settting
 
         // Create a thread builder with necessary stack size
+        let stack_size_in_bytes = max(2 * MEMORY_ARENA_SIZE_IN_BYTES, ONE_MEGABYTE);
         let builder = std::thread::Builder::new()
-            .stack_size(10 * MEMORY_ARENA_SIZE_IN_BYTES)
+            .stack_size(stack_size_in_bytes)
             .name("test_paragraph_mut_iterator".into());
 
         let sizeof_memory_arena = size_of::<MemoryArena>();
