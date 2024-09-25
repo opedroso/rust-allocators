@@ -71,7 +71,7 @@ pub mod definitions {
     use crossbeam::atomic::*;
     use std::cell::UnsafeCell;
 
-    #[repr(align(1_048_576))] // ONE_MEGABYTE boundary
+    #[repr(align(C,1_048_576))] // ONE_MEGABYTE boundary
     #[derive(Debug)]
     pub(crate) struct MemoryArena {
         // 1 MB = Paragraph[65_536]
@@ -84,7 +84,7 @@ pub mod definitions {
         pub(crate) future_next_arena_base_addr: AtomicCell<u64>, // when this arena is out of memory and a new allocation is requested, a new arena will fullfil it
         pub(crate) signature: u64, // ((the base address of the arena)>>20)
     }
-    #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
+    #[repr(C,align(16))] // PARAGRAPH_SIZE_IN_BYTES
     #[derive(Copy, Clone, Debug, Default)]
     pub(crate) struct Paragraph {
         pub(crate) paragraph_signature: u64, // ((the base address of the arena)>>20)<<20) & next_[free/allocated]_paragraph_idx
@@ -106,7 +106,7 @@ pub mod definitions {
     use crossbeam::atomic::*;
     use std::cell::UnsafeCell;
 
-    #[repr(align(4_096))] // must be literal value of MEMORY_ARENA_SIZE_IN_BYTES
+    #[repr(C,align(4_096))] // must be literal value of MEMORY_ARENA_SIZE_IN_BYTES
     #[derive(Debug)]
     pub(crate) struct MemoryArena {
         // 1 MB = Paragraph[65_536]
@@ -120,7 +120,7 @@ pub mod definitions {
         pub(crate) signature: u64, // ((the base address of the arena)>>20)
                                    // Note: next_available_paragraph_idx and future_next_arena_base_addr *must not* be in same paragraph due to intrinsic locking used to access them
     }
-    #[repr(align(16))] // PARAGRAPH_SIZE_IN_BYTES
+    #[repr(C,align(16))] // PARAGRAPH_SIZE_IN_BYTES
     #[derive(Copy, Clone, Debug)]
     #[derive(Default)]
 pub(crate) struct Paragraph {
